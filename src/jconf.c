@@ -243,20 +243,9 @@ translate_jconf(jconf_options_t *option, json_value *value)
             ss_remote_t **remotes = (ss_remote_t **)entry;
             jconf_t *conf =
                 cork_container_of(remotes, jconf_t, remotes);
-            ss_remote_t *remote = ss_calloc(1, sizeof(ss_remote_t));
 
-            struct jconf_options server_options[] = {
-                { "tag",         jconf_type_string,  &remote->tag           },
-                { "address",     jconf_type_string,  &remote->addr          },
-                { "port",        jconf_type_string,  &remote->port          },
-                { "password",    jconf_type_string,  &remote->password      },
-                { "key",         jconf_type_string,  &remote->key           },
-                { "method",      jconf_type_string,  &remote->method        },
-                { "iface",       jconf_type_string,  &remote->iface         },
-                { "plugin",      jconf_type_string,  &remote->plugin        },
-                { "plugin-opts", jconf_type_string,  &remote->plugin_opts   },
-                { NULL,                          0,                   NULL  }
-            };
+            cork_array(json_value *) values;
+            cork_array_init(&values);
 
             switch (value->type) {
                 case json_array: {
@@ -266,45 +255,53 @@ translate_jconf(jconf_options_t *option, json_value *value)
                                  value->u.array.length, MAX_REMOTE_NUM);
                             break;
                         }
-                        json_value *v = value->u.array.values[j];
-
-                        switch (v->type) {
-                            case json_object: {
-                                translate_jconf(&(jconf_options_t) {
-                                                    .type = jconf_type_config,
-                                                    .targ = &remote, .options = server_options
-                                                }, v);
-                            } break;
-                            default:
-                            case json_string: {
-                                translate_jconf(&(jconf_options_t) {
-                                                    .type = jconf_type_string,
-                                                    .targ = &remote->addr
-                                                }, v);
-                            } break;
-                        }
-                        remotes[conf->remote_num++] = remote;
+                        cork_array_append(&values, value->u.array.values[j]);
                     }
                 } break;
-                case json_object: {
-                    translate_jconf(&(jconf_options_t) {
-                                        .type = jconf_type_config,
-                                        .targ = &remote, .options = server_options
-                                    }, value);
-                    remotes[conf->remote_num++] = remote;
-                } break;
-                case json_string: {
-                    translate_jconf(&(jconf_options_t) {
-                                        .type = jconf_type_string,
-                                        .targ = &remote->addr
-                                    }, value);
-                    remotes[conf->remote_num++] = remote;
-                } break;
                 default: {
-                    LOGE("unknown value type %d", value->type);
-                    FATAL("invalid multi-server config format");
-                } return;
+                    cork_array_append(&values, value);
+                } break;
             }
+
+            for (j = 0; j < values.size; j++) {
+                json_value *v = values.items[j];
+                ss_remote_t *remote = ss_calloc(1, sizeof(ss_remote_t));
+
+                struct jconf_options server_options[] = {
+                    { "tag",         jconf_type_string,  &remote->tag           },
+                    { "address",     jconf_type_string,  &remote->addr          },
+                    { "port",        jconf_type_string,  &remote->port          },
+                    { "password",    jconf_type_string,  &remote->password      },
+                    { "key",         jconf_type_string,  &remote->key           },
+                    { "method",      jconf_type_string,  &remote->method        },
+                    { "iface",       jconf_type_string,  &remote->iface         },
+                    { "plugin",      jconf_type_string,  &remote->plugin        },
+                    { "plugin-opts", jconf_type_string,  &remote->plugin_opts   },
+                    { NULL,                          0,                   NULL  }
+                };
+
+                switch (v->type) {
+                    case json_object: {
+                        translate_jconf(&(jconf_options_t) {
+                                            .type = jconf_type_config,
+                                            .targ = &remote, .options = server_options
+                                        }, v);
+                    } break;
+                    case json_string: {
+                        translate_jconf(&(jconf_options_t) {
+                                            .type = jconf_type_string,
+                                            .targ = &remote->addr
+                                        }, v);
+                    } break;
+                    default: {
+                        LOGE("unknown value type %d", value->type);
+                    } continue;
+                }
+
+                remotes[conf->remote_num++] = remote;
+            }
+
+            cork_array_done(&values);
         } break;
         case jconf_type_config: {
             if (value->type == json_object) {
@@ -426,7 +423,7 @@ parse_argopts(jconf_t *conf, int argc, char **argv)
         { 's',  jconf_type_server,        required_argument,      &conf->remotes      },
         { 'p',  jconf_type_string,        required_argument,      &conf->remote_port  },
         { 'b',  jconf_type_string,        required_argument,      &conf->local_addr   },
-        { 's',  jconf_type_string,        required_argument,      &conf->local_port   },
+        { 'l',  jconf_type_string,        required_argument,      &conf->local_port   },
         { 'f',  jconf_type_string,        required_argument,      &conf->pid_path     },
         { 't',  jconf_type_string,        required_argument,      &conf->timeout      },
         { 'm',  jconf_type_string,        required_argument,      &conf->method       },
@@ -477,18 +474,16 @@ parse_argopts(jconf_t *conf, int argc, char **argv)
         {
             char optstr[3] = { [0] = option->name,
                                [1] = option->has_arg == required_argument ? ':' : 0 };
-            short_options = ss_realloc(short_options, strlen(short_options) + strlen(optstr));
+            short_options = ss_realloc(short_options, strlen(short_options) + strlen(optstr) + 1);
             strcat(short_options, optstr);
         }
     }
 
-    opterr = 0;
-
-    int c, curind;
+    int c;
     int conf_parsed = 0;
 
 again:
-    curind = optind;
+    opterr = 0;
     while ((c = getopt_long(argc, argv,
                             short_options, long_options, NULL)) != -1)
     {
@@ -503,7 +498,7 @@ again:
                             parse_jconf(conf, optarg);
                             goto again;
                         default:
-                            if ((optind == argc - 1)) {
+                            if (optind == argc) {
                                 optind = conf_parsed = 1;
                             } goto again;
                     }
@@ -547,17 +542,15 @@ again:
                         } break;
                         case jconf_type_config: break;
                         default:
-                        case jconf_type_unknown: {
+                        case jconf_type_unknown:
                             // The option character is not recognized.
-                            LOGE("Unrecognized option: %s",
-                                 optopt ? (char []) { optopt } : argv[curind]);
-                            opterr = 1;
-                        } break;
+                            LOGE("Unrecognized option: %s", argv[optind - 1]);
+                            return -1;
                     }
                 }
                 break;
             }
         }
     }
-    return opterr;
+    return 0;
 }

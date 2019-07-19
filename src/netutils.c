@@ -55,8 +55,6 @@
 #include "common.h"
 
 extern int verbose;
-static const char valid_label_bytes[] =
-    "-0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz";
 
 int
 set_reuseport(int socket)
@@ -102,15 +100,33 @@ set_fastopen_passive(int socket)
     return s;
 }
 
-socklen_t
-get_sockaddr_len(struct sockaddr *addr)
+int
+tproxy_socket(int socket, int family)
 {
-    if (addr->sa_family == AF_INET) {
-        return sizeof(struct sockaddr_in);
-    } else if (addr->sa_family == AF_INET6) {
-        return sizeof(struct sockaddr_in6);
+#if defined(IP_TRANSPARENT) && \
+    defined(IP_RECVORIGDSTADDR) && \
+    defined(IPV6_RECVORIGDSTADDR)
+    int opt = 1, err = -1;
+    if (setsockopt(socket, SOL_IP, IP_TRANSPARENT, &opt, sizeof(opt))) {
+        close(socket);
+        return err;
     }
-    return 0;
+
+    switch (family) {
+        case AF_INET:
+            err = setsockopt(socket, SOL_IP,
+                             IP_RECVORIGDSTADDR, &opt, sizeof(opt));
+            break;
+        case AF_INET6:
+            err = setsockopt(socket, SOL_IPV6,
+                             IPV6_RECVORIGDSTADDR, &opt, sizeof(opt));
+            break;
+    }
+
+    return err;
+#else
+    FATAL("transparent proxy not supported in this build");
+#endif
 }
 
 int
@@ -218,6 +234,13 @@ create_and_bind(struct sockaddr_storage *storage,
         if (protocol == IPPROTO_TCP
             && listen_ctx->mptcp) {
             set_mptcp(fd);
+        }
+#elif MODULE_REDIR
+        if (protocol == IPPROTO_UDP) {
+            if (tproxy_socket(fd, storage->ss_family)) {
+                ERROR("tproxy_socket");
+                FATAL("failed to enable transparent proxy");
+            }
         }
 #endif
     }
@@ -489,7 +512,7 @@ sockaddr_readable(char *format, struct sockaddr_storage *addr)
                         if (addr->ss_family == AF_INET6
                             && i + 1 < len && format[i + 1] == ':')
                         {
-                            substr = malloc(strlen(host) + 2);
+                            substr = malloc(strlen(host) + 2 + 1);
                             sprintf(substr, "[%s]", host);
                         } else {
                             substr = host;
@@ -509,7 +532,7 @@ sockaddr_readable(char *format, struct sockaddr_storage *addr)
         }
 
         size_t substrlen = strlen(substr);
-        ret = realloc(ret, strlen(ret) + substrlen);
+        ret = realloc(ret, strlen(ret) + substrlen + 1);
         strcat(ret, substr);
     }
     return ret;
@@ -576,48 +599,13 @@ sockaddr_cmp_addr(struct sockaddr_storage *addr1,
     }
 }
 
-int
-validate_hostname(const char *hostname, const int hostname_len)
-{
-    if (hostname == NULL)
-        return 0;
-
-    if (hostname_len < 1 || hostname_len > 255)
-        return 0;
-
-    if (hostname[0] == '.')
-        return 0;
-
-    const char *label = hostname;
-    while (label < hostname + hostname_len) {
-        size_t label_len = hostname_len - (label - hostname);
-        char *next_dot   = strchr(label, '.');
-        if (next_dot != NULL)
-            label_len = next_dot - label;
-
-        if (label + label_len > hostname + hostname_len)
-            return 0;
-
-        if (label_len > 63 || label_len < 1)
-            return 0;
-
-        if (label[0] == '-' || label[label_len - 1] == '-')
-            return 0;
-
-        if (strspn(label, valid_label_bytes) < label_len)
-            return 0;
-
-        label += label_len + 1;
-    }
-
-    return 1;
-}
-
 char *
-hostname_readable(char *dname, uint16_t port)
+hostname_readable(const char *dname,
+                  const int dname_len, uint16_t port)
 {
-    static char ret[] = { 0 };
-    sprintf(ret, "%s:%d", dname, ntohs(port));
+    size_t len = dname_len + MAX_PORT_STR_LEN;
+    char *ret = ss_calloc(len , sizeof(*ret));
+    snprintf(ret, len, "%.*s:%d", dname_len, dname, ntohs(port));
     return ret;
 }
 
