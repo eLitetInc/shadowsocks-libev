@@ -188,12 +188,8 @@ create_remote(EV_P_ remote_t *remote, buffer_t *buf,
         destaddr->dname = NULL;
     }
 
-    dname_t dname = { destaddr->dname_len, destaddr->dname };
-
-    int direct = acl_enabled     ?
-                 destaddr->dname ? search_acl(ACL_ATYP_DOMAIN, &dname, ACL_UNSPCLIST):
-                 destaddr->addr  ? search_acl(ACL_ATYP_IP, destaddr->addr, ACL_UNSPCLIST):
-                 0 : 0;
+    int direct = acl_enabled ?
+                 search_acl(ACL_ATYP_SSOCKS, destaddr, ACL_UNSPCLIST) : 0;
 
     if (verbose) {
         LOGI("%s %s", direct ? "bypassing" : "connecting to",
@@ -205,12 +201,9 @@ create_remote(EV_P_ remote_t *remote, buffer_t *buf,
 
     if (!remote->direct)
 bailed: {
-        int remote_idx = acl_enabled     ?
-                         destaddr->dname ? search_acl(ACL_ATYP_DOMAIN, &dname, ACL_DELEGATION):
-                         destaddr->addr  ? search_acl(ACL_ATYP_IP, destaddr->addr, ACL_DELEGATION):
-                         -1 : -1;
-        if (remote_idx < 0)
-            remote_idx = rand() % listen_ctx->remote_num;
+        int remote_idx = acl_enabled ?
+                         search_acl(ACL_ATYP_SSOCKS, destaddr, ACL_DELEGATION) :
+                         rand() % listen_ctx->remote_num;
         create_ssocks_header(server->abuf, destaddr);
         return init_remote(EV_A_ remote, listen_ctx->remotes[remote_idx]);
     } else {
@@ -673,11 +666,11 @@ start_relay(jconf_t *conf,
         LOGI("prioritized IPv6 addresses in domain resolution");
     }
 
-
 #ifndef MODULE_TUNNEL
     if (conf->acl != NULL) {
         LOGI("initializing acl...");
-        acl = !init_acl(conf);
+        if (!(acl = !init_acl(conf)))
+            LOGE("failed to enable acl");
     }
 #endif
 

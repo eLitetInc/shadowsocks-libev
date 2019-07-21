@@ -51,7 +51,8 @@ enum {
     ACL_ATYP_IP,
     ACL_ATYP_IPV4,
     ACL_ATYP_IPV6,
-    ACL_ATYP_DOMAIN
+    ACL_ATYP_DOMAIN,
+    ACL_ATYP_SSOCKS
 } acl_types;
 
 typedef struct {
@@ -78,7 +79,7 @@ typedef struct acl {
     addrlist blocklist;
     addrlist blacklist, whitelist;
     delglist **deleglist;
-    ev_timer watcher;
+    cork_array(int) unusedlist;
 } acl_t;
 
 int init_acl(jconf_t *conf);

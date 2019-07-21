@@ -249,6 +249,12 @@ ss_calloc(size_t num, size_t size)
     return tmp;
 }
 
+#define null_terminate(arr, len)    \
+    if ((arr)[len - 1] != 0) {              \
+        (arr) = ss_realloc((arr), len + 1); \
+        (arr)[len] = 0;                     \
+    }
+
 int ss_is_ipv6addr(const char *addr);
 char *trim_whitespace(char *str);
 

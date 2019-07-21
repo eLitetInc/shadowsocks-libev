@@ -326,7 +326,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
     if (r == 0) {
         // connection closed
         if (verbose) {
-            LOGI("server_recv close the connection");
+            LOGI("server_recv closing the connection");
         }
         close_and_free_remote(EV_A_ remote);
         close_and_free_server(EV_A_ server);
@@ -384,10 +384,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             }
 
             if (destaddr.dname != NULL) {
-                if (destaddr.dname[destaddr.dname_len - 1] != 0) {
-                    destaddr.dname = ss_realloc(destaddr.dname, destaddr.dname_len + 1);
-                    destaddr.dname[destaddr.dname_len] = 0;
-                }
+                null_terminate(destaddr.dname, destaddr.dname_len);
 
                 if (acl && search_acl(ACL_ATYP_DOMAIN, &(dname_t){ destaddr.dname_len, destaddr.dname }, ACL_BLOCKLIST)) {
                     if (verbose)
@@ -489,7 +486,7 @@ server_send_cb(EV_P_ ev_io *w, int revents)
     if (server->buf->len == 0) {
         // close and free
         if (verbose) {
-            LOGI("server_send close the connection");
+            LOGI("server_send closing the connection");
         }
         close_and_free_remote(EV_A_ remote);
         close_and_free_server(EV_A_ server);
@@ -601,7 +598,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
     if (r == 0) {
         // connection closed
         if (verbose) {
-            LOGI("remote_recv close the connection");
+            LOGI("remote_recv closing the connection");
         }
         close_and_free_remote(EV_A_ remote);
         close_and_free_server(EV_A_ server);
@@ -714,7 +711,7 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
         memset(&addr, 0, len);
         int r = getpeername(remote->fd, (struct sockaddr *)&addr, &len);
         if (r == 0) {
-            // connection connected, stop the request timeout timer
+            // connected, stop the request timeout timer
             ev_timer_stop(EV_A_ & server->recv_ctx->watcher);
 
             remote_send_ctx->connected = 1;
@@ -738,7 +735,7 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
     if (remote->buf->len == 0) {
         // close and free
         if (verbose) {
-            LOGI("remote_send close the connection");
+            LOGI("remote_send closing the connection");
         }
         close_and_free_remote(EV_A_ remote);
         close_and_free_server(EV_A_ server);
@@ -791,19 +788,18 @@ accept_cb(EV_P_ ev_io *w, int revents)
         return;
     }
 
-    struct sockaddr_storage addr;
-    socklen_t len = sizeof(struct sockaddr_storage);
-    memset(&addr, 0, len);
-    int r = getpeername(serverfd, (struct sockaddr *)&addr, &len);
-
-    if (r == 0) {
-        if (acl && search_acl(ACL_ATYP_IP, &addr, ACL_UNSPCLIST))
-        {
-            if (verbose) {
-                LOGE("blocking all requests from %s",
-                     sockaddr_readable("%a", &addr));
+    if (acl) {
+        struct sockaddr_storage addr;
+        socklen_t len = sizeof(struct sockaddr_storage);
+        int r = getpeername(serverfd, (struct sockaddr *)&addr, &len);
+        if (r == 0) {
+            if (search_acl(ACL_ATYP_IP, &addr, ACL_UNSPCLIST))
+            {
+                if (verbose)
+                    LOGE("blocking all requests from %s",
+                        sockaddr_readable("%a", &addr));
+                return;
             }
-            return;
         }
     }
 

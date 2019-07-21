@@ -298,10 +298,9 @@ new_remote(int fd, int timeout)
     remote_t *remote = ss_calloc(1, sizeof(remote_t));
     remote->fd = fd;
 
-    int request_timeout = max(timeout, MIN_UDP_TIMEOUT);
-
     ev_io_init(&remote->io, remote_recv_cb, fd, EV_READ);
-    ev_timer_init(&remote->watcher, remote_timeout_cb, request_timeout, request_timeout);
+    ev_timer_init(&remote->watcher, remote_timeout_cb,
+                  max(timeout, MIN_UDP_TIMEOUT), 0);
     return remote;
 }
 
@@ -309,8 +308,19 @@ static void
 close_and_free_remote(EV_P_ remote_t *remote)
 {
     if (remote != NULL) {
+        /**
+         *  WATCH OUT!
+         *  ---------------------------
+         *  The code below removes the target watcher from the "idlers' list,"
+         *  ONLY if it's no longer active. Please keep in mind that the watchers
+         *  that are currenly active do not count.
+         *  They have ALREADY been (and are REQUIRED to be) removed from the list.
+         */
+        if (!ev_is_active(&remote->io))
+            cork_dllist_remove(&remote->entries);
         ev_timer_stop(EV_A_ & remote->watcher);
         ev_io_stop(EV_A_ & remote->io);
+
         close(remote->fd);
 #ifdef MODULE_SOCKS
         if (remote->abuf != NULL) {
@@ -423,6 +433,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
     int sourcefd = create_tproxy(remote->destaddr);
     if (sourcefd < 0) {
         ERROR("[udp] remote_recv_socket");
+        close_and_free_remote(EV_A_ remote);
         goto CLEAN_UP;
     }
 
@@ -432,6 +443,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
     if (s == -1) {
         ERROR("[udp] remote_recv_sendto");
         close(sourcefd);
+        close_and_free_remote(EV_A_ remote);
         goto CLEAN_UP;
     }
     close(sourcefd);
@@ -442,6 +454,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
                    get_sockaddr_len((struct sockaddr *)remote->src_addr));
     if (s == -1) {
         ERROR("[udp] remote_recv_sendto");
+        close_and_free_remote(EV_A_ remote);
         goto CLEAN_UP;
     }
 
@@ -464,19 +477,9 @@ remote_timeout_cb(EV_P_ ev_timer *watcher, int revents)
         = cork_container_of(watcher, remote_t, watcher);
 
     if (verbose) {
-        LOGI("[udp] connection timed out");
+        LOGI("[udp] transmission timed out");
     }
 
-    /**
-     *  WATCH OUT!
-     *  ---------------------------
-     *  The code below removes the target watcher from the "idlers' list,"
-     *  ONLY if it's no longer active. Please keep in mind that the watchers
-     *  that are currenly active do not count.
-     *  They have ALREADY been (and are REQUIRED to be) removed from the list.
-     */
-    if (!ev_is_active(&remote->io))
-        cork_dllist_remove(&remote->entries);
     close_and_free_remote(EV_A_ remote);
 }
 
@@ -694,12 +697,8 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
         destaddr->dname = NULL;
     }
 
-    dname_t dname = { destaddr->dname_len, destaddr->dname };
-
     remote->direct = acl_enabled ?
-        destaddr->dname ? search_acl(ACL_ATYP_DOMAIN, &dname, ACL_UNSPCLIST):
-        destaddr->addr  ? search_acl(ACL_ATYP_IP, destaddr->addr, ACL_UNSPCLIST):
-        0 : 0;
+                     search_acl(ACL_ATYP_SSOCKS, destaddr, ACL_UNSPCLIST) : 0;
 
     if (verbose) {
         LOGI("%s %s", remote->direct ? "bypassing" : "connecting to",
@@ -709,12 +708,9 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
 
     if (!remote->direct)
 bailed: {
-        int remote_idx = acl_enabled     ?
-                         destaddr->dname ? search_acl(ACL_ATYP_DOMAIN, &dname, ACL_DELEGATION):
-                         destaddr->addr  ? search_acl(ACL_ATYP_IP, destaddr->addr, ACL_DELEGATION):
-                         -1 : -1;
-        if (remote_idx < 0)
-            remote_idx = rand() % listen_ctx->remote_num;
+        int remote_idx = acl_enabled ?
+                         search_acl(ACL_ATYP_SSOCKS, destaddr, ACL_DELEGATION) :
+                         rand() % listen_ctx->remote_num;
 
         buffer_t *abuf   = new_buffer(buf_size);
         remote_cnf_t *remote_cnf
@@ -754,10 +750,12 @@ bailed: {
         }
     }
 
-    int s = sendto(remote->fd, buf->data, buf->len, 0, (struct sockaddr *)remote_addr, sizeof(*remote_addr));
+    int s = sendto(remote->fd, buf->data, buf->len, 0,
+                   (struct sockaddr *)remote_addr, sizeof(*remote_addr));
 
     if (s == -1) {
         ERROR("[udp] server_recv_sendto");
+        close_and_free_remote(EV_A_ remote);
     } else {
         // start remote io
         ev_io_start(EV_A_ & remote->io);

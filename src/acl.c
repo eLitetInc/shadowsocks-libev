@@ -142,16 +142,6 @@ search_addrlist(addrlist *list,
     if (host == NULL)
         return false;
     switch (atyp) {
-        case ACL_ATYP_IP: {
-            switch(((struct sockaddr_storage *)host)->ss_family) {
-                case AF_INET:
-                    return ipset_contains_ipv4(&list->ip,
-                           (struct cork_ipv4 *)&((struct sockaddr_in *)host)->sin_addr);
-                case AF_INET6:
-                    return ipset_contains_ipv6(&list->ip,
-                           (struct cork_ipv6 *)&((struct sockaddr_in6 *)host)->sin6_addr);
-            }
-        } break;
         case ACL_ATYP_IPV4: {
             return ipset_contains_ipv4(&list->ip,
                    (struct cork_ipv4 *)&((struct sockaddr_in *)host)->sin_addr);
@@ -164,6 +154,26 @@ search_addrlist(addrlist *list,
             dname_t *dname = (dname_t *)host;
             return lookup_rule(&list->domain, dname->dname,
                                elvis(dname->len, strlen(dname->dname))) != NULL;
+        }
+        case ACL_ATYP_IP: {
+            switch(((struct sockaddr_storage *)host)->ss_family) {
+                case AF_INET:
+                    return search_addrlist(list, ACL_ATYP_IPV4,
+                                           (struct sockaddr_in *)host);
+                case AF_INET6:
+                    return search_addrlist(list, ACL_ATYP_IPV6,
+                                           (struct sockaddr_in6 *)host);
+            }
+        } break;
+        case ACL_ATYP_SSOCKS: {
+            ssocks_addr_t *destaddr = (ssocks_addr_t *)host;
+            if (destaddr->dname && destaddr->dname_len)
+            {
+                return lookup_rule(&list->domain,
+                            destaddr->dname, destaddr->dname_len) != NULL;
+            } else if (destaddr->addr) {
+                return search_addrlist(list, ACL_ATYP_IP, destaddr->addr);
+            }
         }
     }
     return false;
@@ -389,16 +399,16 @@ parse_aclconf(FILE *f, aclconf_t *aclconf, ctrlist_t *ctrlist_n)
              */
 
             do {
-                char *ltag = trim_whitespace(strtok(varname, dltagsep));
+                char *ltag = trim_whitespace(strdup(strtok(varname, dltagsep)));
                 if (ltag != NULL) {
                     char *tag = NULL;
                     labels_t *tags = ss_malloc(sizeof(*tags));
                     cork_array_init(tags);
                     while ((tag = strtok(NULL, dltagsep))) {
-                        cork_array_append(tags, trim_whitespace(tag));
+                        cork_array_append(tags, trim_whitespace(strdup(tag)));
                     }
 
-                    ctrlist = fetch_ctrlist(ctrlists, &(label_t) { strdup(ltag), tags });
+                    ctrlist = fetch_ctrlist(ctrlists, &(label_t) { ltag, tags });
                 }
             } while ((varname = strtok(NULL, dlvarnme)));
         }
@@ -448,9 +458,8 @@ parse_acl(acl_t *acl, aclconf_t *aclconf)
         setcwd(prevwd);
     ss_free(prevwd);
 
-    if (aclconf->interval > 0) {
-        ev_timer_set(&acl->watcher, aclconf->interval, aclconf->interval);
-    }
+    int remote_num = aclconf->conf->remote_num;
+    bool *usedlist = ss_calloc(remote_num, sizeof(*usedlist));
 
     acl->mode = aclconf->mode;
 
@@ -478,10 +487,12 @@ parse_acl(acl_t *acl, aclconf_t *aclconf)
 
                 cork_array_init(&deleglist->idxs);
                 for (int n = 0; n < list->label.tags->size; n++) {
-                    for (int i = 0; i < aclconf->conf->remote_num; i++) {
+                    for (int i = 0; i < remote_num; i++) {
                         char *rtag = trim_whitespace(aclconf->conf->remotes[i]->tag);
-                        if (rtag && strcmp(list->label.tags->items[n], rtag) == 0)
+                        if (rtag && strcmp(list->label.tags->items[n], rtag) == 0) {
+                            usedlist[i] = true;
                             cork_array_append(&deleglist->idxs, i);
+                        }
                     }
                 }
 
@@ -498,6 +509,12 @@ parse_acl(acl_t *acl, aclconf_t *aclconf)
         for (int i = 0; i < list->list->size; i++)
             merge_addrlist(rlist, list->list->items[i]);
     }
+
+    for (int i = 0; i < remote_num; i++)
+        if (!usedlist[i])
+            cork_array_append(&acl->unusedlist, i);
+
+    ss_free(usedlist);
 
     cache_clear(aclconf->lists, 0);
 
@@ -517,11 +534,9 @@ init_acl(jconf_t *conf)
     init_addrlist(&acl.blocklist);
     init_addrlist(&acl.blacklist);
     init_addrlist(&acl.whitelist);
+    cork_array_init(&acl.unusedlist);
 
-    if (parse_acl(&acl, &acl.conf) != 0)
-        return -1;
-
-    return 0;
+    return parse_acl(&acl, &acl.conf);
 }
 
 /**
@@ -549,10 +564,12 @@ search_acl(int atyp, const void *host, int type)
     if (type == ACL_DELEGATION) {
         delglist **deleglist = acl.deleglist;
         do {
-            if (search_addrlist(&(*deleglist)->_, atyp, host)
-                && (*deleglist)->idxs.items != NULL)
+            if (search_addrlist(&(*deleglist)->_, atyp, host) &&
+                (*deleglist)->idxs.items != NULL && (*deleglist)->idxs.size > 0)
                 return (*deleglist)->idxs.items[rand() % (*deleglist)->idxs.size];
-        } while (*(++deleglist));
+        } while (*++deleglist);
+        if (acl.unusedlist.size > 0)
+            return acl.unusedlist.items[rand() % acl.unusedlist.size];
     } else {
         bool ret = false;
         bool smart = (type == ACL_UNSPCLIST);
