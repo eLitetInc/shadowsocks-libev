@@ -65,7 +65,9 @@ static void resolv_cb(struct sockaddr *addr, void *data);
 #endif
 
 static remote_t *new_remote(int fd, int timeout);
-static int create_remote(struct sockaddr_storage *addr, const char *iface);
+static remote_t *create_remote(EV_P_ struct sockaddr_storage *addr, server_t *server);
+static int remote_socket(struct sockaddr_storage *addr, const char *iface);
+static void close_and_free_remote(EV_P_ remote_t *remote);
 
 #if defined MODULE_REMOTE || defined __ANDROID__
 extern uint64_t tx, rx;
@@ -124,37 +126,26 @@ resolv_cb(struct sockaddr *addr, void *data)
     if (addr == NULL) {
         LOGE("[udp] unable to resolve");
     } else {
-        int remotefd = -1;
-        struct cork_dllist_item *remote_itm = cork_dllist_head(&server->remotes);
-        remote_t *remote
-            = remote_itm ? cork_container_of(remote_itm, remote_t, entries) : NULL;
+        remote_t *remote =
+            create_remote(EV_A_ NULL/*listen_ctx->addr*/, server);
 
-        if (remote != NULL) {
-            remotefd = remote->fd;
-            cork_dllist_remove(&remote->entries);
-            ev_timer_again(EV_A_ & remote->watcher);
-        } else {
-            //remotefd = create_remote(listen_ctx->addr, listen_ctx->iface);
-            remotefd = create_remote(NULL, listen_ctx->iface);
-            if (remotefd < 0) {
-                ERROR("[udp] udprelay bind() error");
-                return;
-            }
-        }
+        if (remote == NULL)
+            return;
 
-        int s = sendto(remotefd, query->buf->data, query->buf->len,
-                       0, addr, get_sockaddr_len(addr));
+        remote->src_addr = query->src_addr;
+        int s = connect(remote->fd, addr, get_sockaddr_len(addr));
 
         if (s == -1) {
-            ERROR("[udp] sendto_remote");
+            ERROR("connect");
+            close_and_free_remote(EV_A_ remote);
             return;
-        } else if (remote == NULL) {
-            // init remote
-            remote           = new_remote(remotefd, listen_ctx->timeout);
-            remote->server   = query->server;
-            remote->src_addr = query->src_addr;
+        }
 
-            ev_timer_start(EV_A_ & remote->watcher);
+        s = send(remote->fd, query->buf->data, query->buf->len, 0);
+        if (s == -1) {
+            ERROR("[udp] sendto_remote");
+            close_and_free_remote(EV_A_ remote);
+            return;
         }
 
         // start remote io
@@ -204,7 +195,7 @@ create_tproxy(struct sockaddr_storage *destaddr)
 #endif
 
 static int
-create_remote(struct sockaddr_storage *addr, const char *iface)
+remote_socket(struct sockaddr_storage *addr, const char *iface)
 {
     socklen_t addrlen = 0;
     struct sockaddr_storage *destaddr = addr;
@@ -293,6 +284,38 @@ create_remote(struct sockaddr_storage *addr, const char *iface)
 }
 
 static remote_t *
+create_remote(EV_P_ struct sockaddr_storage *addr, server_t *server)
+{
+    listen_ctx_t *listen_ctx = server->listen_ctx;
+    struct cork_dllist_item *remote_itm = cork_dllist_head(&server->remotes);
+    remote_t *remote
+        = remote_itm ? cork_container_of(remote_itm, remote_t, entries) : NULL;
+
+    if (remote != NULL) {
+        // remote is now active and
+        // now we need to remove it from the "idlers' list"
+        cork_dllist_remove(&remote->entries);
+        ev_timer_again(EV_A_ & remote->watcher);
+    } else {
+        // Bind to any port
+        int remotefd = remote_socket(addr, listen_ctx->iface);
+        if (remotefd < 0) {
+            ERROR("[udp] udprelay bind() error");
+            return NULL;
+        }
+
+        // Init remote
+        remote = new_remote(remotefd, listen_ctx->timeout);
+        remote->server = server;
+
+        ev_timer_start(EV_A_ & remote->watcher);
+    }
+
+    return remote;
+}
+
+
+static remote_t *
 new_remote(int fd, int timeout)
 {
     remote_t *remote = ss_calloc(1, sizeof(remote_t));
@@ -340,7 +363,8 @@ new_server(int fd, listen_ctx_t *listener)
 
     ev_io_init(&server->io, server_recv_cb, fd, EV_READ);
 
-    servers[server_num++] = server;
+    if (server_num < MAX_REMOTE_NUM)
+        servers[server_num++] = server;
     cork_dllist_init(&server->remotes);
 
     return server;
@@ -377,13 +401,8 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
         return;
     }
 
-    struct sockaddr_storage src_addr = { 0 };
-    socklen_t src_addr_len = sizeof(struct sockaddr_storage);
-
     buffer_t *buf = new_buffer(buf_size);
-
-    ssize_t r = recvfrom(remote->fd, buf->data, buf_size, 0,
-                         (struct sockaddr *)&src_addr, &src_addr_len);
+    ssize_t r = recv(remote->fd, buf->data, buf_size, 0);
 
     if (r == -1) {
         ERROR("[udp] remote_recv_recvfrom");
@@ -577,10 +596,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
     }
 
     if (destaddr->dname != NULL) {
-        if (destaddr->dname[destaddr->dname_len - 1] != 0) {
-            destaddr->dname = ss_realloc(destaddr->dname, destaddr->dname_len + 1);
-            destaddr->dname[destaddr->dname_len] = 0;
-        }
+        null_terminate(destaddr->dname, destaddr->dname_len);
 
         if (acl && search_acl(ACL_ATYP_DOMAIN,
                               &(dname_t) { destaddr->dname_len, destaddr->dname }, ACL_BLOCKLIST))
@@ -598,7 +614,8 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
         query->server   = server;
         query->src_addr = src_addr;
 
-        resolv_start(destaddr->dname, destaddr->port, resolv_cb, resolv_free_cb, query);
+        resolv_start(destaddr->dname, destaddr->port,
+                     resolv_cb, resolv_free_cb, query);
         return;
     } else {
         if (acl && search_acl(ACL_ATYP_IP, destaddr->addr, ACL_BLOCKLIST)) {
@@ -612,39 +629,19 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                 sockaddr_readable("%a:%p", destaddr->addr));
         }
 
-        query_t query = { buf, server, src_addr };
-        resolv_cb((struct sockaddr *)destaddr->addr, &query);
+        resolv_cb((struct sockaddr *)destaddr->addr,
+                  &(query_t){ buf, server, src_addr });
     }
 /////////////////////////////
 #elif defined MODULE_LOCAL
     listen_ctx_t *listen_ctx = server->listen_ctx;
-    struct cork_dllist_item *remote_itm = cork_dllist_head(&server->remotes);
-    remote_t *remote
-        = remote_itm ? cork_container_of(remote_itm, remote_t, entries) : NULL;
     struct sockaddr_storage *remote_addr = NULL;
+    remote_t *remote = create_remote(EV_A_ NULL, server);
 
-    if (remote != NULL) {
-        remote->src_addr = src_addr;
-        // remote is now active and
-        // now we need to remove it from the "idlers' list"
-        cork_dllist_remove(&remote->entries);
-        ev_timer_again(EV_A_ & remote->watcher);
-    } else {
-        // Bind to any port
-        int remotefd = create_remote(NULL, listen_ctx->iface);
-        if (remotefd < 0) {
-            ERROR("[udp] udprelay bind() error");
-            goto CLEAN_UP;
-        }
+    if (remote == NULL)
+        goto CLEAN_UP;
 
-        // Init remote
-        remote           = new_remote(remotefd, listen_ctx->timeout);
-        remote->server   = server;
-        remote->src_addr = src_addr;
-
-        ev_timer_start(EV_A_ & remote->watcher);
-    }
-
+    remote->src_addr = src_addr;
 // tproxy module ////////////
 #ifdef MODULE_REDIR
     remote->destaddr = destaddr->addr;
@@ -652,7 +649,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
 #elif defined MODULE_TUNNEL
     destaddr = &listen_ctx->destaddr;
 // socks5 module ////////////
-#else
+#elif defined MODULE_SOCKS
 #ifdef __ANDROID__
     tx += buf->len;
 #endif
@@ -671,7 +668,6 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
 
     buf->len -= offset;
     memmove(buf->data, buf->data + offset, buf->len);
-
 #endif
 /////////////////////////////
 
@@ -750,8 +746,15 @@ bailed: {
         }
     }
 
-    int s = sendto(remote->fd, buf->data, buf->len, 0,
-                   (struct sockaddr *)remote_addr, sizeof(*remote_addr));
+    int s = connect(remote->fd, (struct sockaddr *)remote_addr, sizeof(*remote_addr));
+
+    if (s == -1) {
+        ERROR("connect");
+        close_and_free_remote(EV_A_ remote);
+        goto CLEAN_UP;
+    }
+
+    s = send(remote->fd, buf->data, buf->len, 0);
 
     if (s == -1) {
         ERROR("[udp] server_recv_sendto");
