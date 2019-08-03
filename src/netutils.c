@@ -155,9 +155,9 @@ getdestaddr(int fd, struct sockaddr_storage *destaddr)
 int
 getdestaddr_dgram(struct msghdr *msg, struct sockaddr_storage *destaddr)
 {
-    struct cmsghdr *cmsg;
-
-    for (cmsg = CMSG_FIRSTHDR(msg); cmsg; cmsg = CMSG_NXTHDR(msg, cmsg)) {
+#if defined(IP_RECVORIGDSTADDR) && \
+    defined(IPV6_RECVORIGDSTADDR)
+    for (struct cmsghdr *cmsg = CMSG_FIRSTHDR(msg); cmsg; cmsg = CMSG_NXTHDR(msg, cmsg)) {
         if (cmsg->cmsg_level == SOL_IP &&
             cmsg->cmsg_type == IP_RECVORIGDSTADDR) {
             memcpy(destaddr, CMSG_DATA(cmsg), sizeof(struct sockaddr_in));
@@ -170,7 +170,9 @@ getdestaddr_dgram(struct msghdr *msg, struct sockaddr_storage *destaddr)
             return 0;
         }
     }
-
+#else
+    FATAL("transparent proxy not supported in this build");
+#endif
     return -1;
 }
 

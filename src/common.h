@@ -39,9 +39,6 @@
 #include "protocol.h"
 #include "shadowsocks.h"
 
-#ifndef SOL_TCP
-#define SOL_TCP IPPROTO_TCP
-#endif
 
 #ifndef EAGAIN
 #define EAGAIN EWOULDBLOCK

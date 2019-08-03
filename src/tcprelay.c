@@ -639,8 +639,7 @@ start_relay(jconf_t *conf,
 {
     int plugin_enabled = 0;
 
-    if (!(conf->remotes != NULL &&
-        conf->remote_num > 0)) {
+    if (conf->remote_num <= 0) {
         LOGE("at least one server should be specified");
         return -1;
     }

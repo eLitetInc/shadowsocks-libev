@@ -130,7 +130,7 @@ connect_to_remote(EV_P_ server_t *server,
     if (setnonblocking(sockfd) == -1)
         ERROR("setnonblocking");
 
-    /*if (listen_ctx->addr) {
+    if (listen_ctx->addr) {
         socklen_t addrlen = 0;
         struct sockaddr_storage *storage = NULL;
         switch (listen_ctx->addr->ss_family) {
@@ -157,7 +157,7 @@ connect_to_remote(EV_P_ server_t *server,
             close(sockfd);
             return NULL;
         }
-    } */
+    }
 
 #ifdef SET_INTERFACE
     if (listen_ctx->iface) {

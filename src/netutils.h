@@ -38,6 +38,12 @@
 #include <netdb.h>
 #endif
 
+#include "common.h"
+
+#ifndef SOL_TCP
+#define SOL_TCP IPPROTO_TCP
+#endif
+
 /* Hard coded defines for TCP fast open on Android */
 #ifdef __ANDROID__
 #ifndef TCP_FASTOPEN
@@ -55,6 +61,7 @@
 #define SO_REUSEPORT 15
 #endif
 
+#ifdef __linux__
 #ifndef IP_TRANSPARENT
 #define IP_TRANSPARENT       19
 #endif
@@ -77,6 +84,7 @@
 
 #ifndef IP6T_SO_ORIGINAL_DST
 #define IP6T_SO_ORIGINAL_DST 80
+#endif
 #endif
 
 #ifndef INADDR_LOOPBACK
@@ -157,10 +165,12 @@ static const ss_service_t service_ports[] = {
  * test from newest to the latest version and see if
  * mptcp is enabled.
  */
-#ifndef MPTCP_ENABLED
-static const char mptcp_enabled_values[] = { 42, 26, 0 };
+static const 
+char mptcp_enabled_values[] =
+#ifdef MPTCP_ENABLED
+    { MPTCP_ENABLED, 0 };
 #else
-static const char mptcp_enabled_values[] = { MPTCP_ENABLED, 0 };
+    { 42, 26, 0 };
 #endif
 
 #ifndef UPDATE_INTERVAL
@@ -224,7 +234,6 @@ int setinterface(int socket_fd, const char *interface_name);
 int setnonblocking(int fd);
 #endif
 
-typedef struct listen_ctx listen_ctx_t;
 int create_and_bind(struct sockaddr_storage *storage,
                     int protocol, listen_ctx_t *listen_ctx);
 int bind_and_listen(struct sockaddr_storage *storage,

@@ -698,8 +698,7 @@ main(int argc, char **argv)
         exit(EXIT_FAILURE);
     }
 
-    if (!(conf.remotes != NULL &&
-        conf.remote_num > 0)) {
+    if (conf.remote_num <= 0) {
         FATAL("at least one server should be specified");
     }
 

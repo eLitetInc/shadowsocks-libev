@@ -50,9 +50,9 @@ struct dscptracker {
 };
 #endif
 
-typedef struct server server_t;
+//typedef struct server server_t;
 typedef struct query {
-    server_t *server;
+    struct server *server;
     char *hostname;
 } query_t;
 #endif

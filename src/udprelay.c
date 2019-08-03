@@ -514,20 +514,18 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
 #ifdef MODULE_REDIR
     char control_buffer[64] = { 0 };
 
-    struct iovec iov[] = {
-        (struct iovec) {
-            .iov_base = buf->data,
-            .iov_len  = buf_size
-        }
-    };
-
     struct msghdr msg = {
         .msg_name       = src_addr,
         .msg_namelen    = sizeof(*src_addr),
         .msg_control    = control_buffer,
         .msg_controllen = sizeof(control_buffer),
-        .msg_iov        = iov,
-        .msg_iovlen     = 1
+        .msg_iov = (struct iovec []) {
+            (struct iovec) {
+                .iov_base = buf->data,
+                .iov_len  = buf_size
+            }            
+        },
+        .msg_iovlen = 1
     };
 
     buf->len = recvmsg(server->fd, &msg, 0);
