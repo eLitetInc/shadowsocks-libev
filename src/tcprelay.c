@@ -105,8 +105,7 @@ new_remote(server_t *server)
     remote->recv_ctx->connected = 0;
     remote->send_ctx->remote    = remote;
     remote->send_ctx->connected = 0;
-
-    server->remote = remote;
+    
     remote->server = server;
 
     return remote;

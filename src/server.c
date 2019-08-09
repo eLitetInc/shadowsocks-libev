@@ -312,13 +312,9 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
 
     buffer_t *buf = server->buf;
 
-    switch (server->stage) {
-        case STAGE_STOP:
-            return;
-        case STAGE_STREAM: {
-            remote = server->remote;
-            buf    = remote->buf;
-        } break;
+    if (server->stage == STAGE_STREAM) {
+        remote = server->remote;
+        buf    = remote->buf;
     }
 
     ssize_t r = recv(server->fd, buf->data, SOCKET_BUF_SIZE, 0);
@@ -342,6 +338,10 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             close_and_free_server(EV_A_ server);
             return;
         }
+    }
+
+    if (server->stage == STAGE_STOP) {
+        return;
     }
 
     tx      += r;
@@ -617,6 +617,10 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
     }
 
     rx += r;
+
+    if (server->stage == STAGE_STOP) {
+        return;
+    }
 
     server->buf->len = r;
     int err = crypto->encrypt(server->buf, server->e_ctx, SOCKET_BUF_SIZE);

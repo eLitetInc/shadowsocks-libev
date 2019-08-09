@@ -421,7 +421,7 @@ accept_cb(EV_P_ ev_io *w, int revents)
     setsockopt(serverfd, SOL_SOCKET, SO_NOSIGPIPE, &opt, sizeof(opt));
 #endif
 
-    new_remote(server);
+    server->remote = new_remote(server);
     ev_io_start(EV_A_ & server->recv_ctx->io);
 }
 

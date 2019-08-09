@@ -405,6 +405,7 @@ accept_cb(EV_P_ ev_io *w, int revents)
     server_t *server = new_server(serverfd);
     remote_t *remote = new_remote(server);
 
+    server->remote     = remote;
     server->listen_ctx = listener;
     if (create_remote(EV_A_ remote, NULL, &listener->destaddr, 0) == -1) {
         ERROR("create_remote");

@@ -689,10 +689,10 @@ accept_cb(EV_P_ ev_io *w, int revents)
     setsockopt(serverfd, SOL_SOCKET, SO_NOSIGPIPE, &opt, sizeof(opt));
 #endif
 
-    server_t *server = new_server(serverfd);
+    server_t *server   = new_server(serverfd);
     server->listen_ctx = listener;
+    server->remote     = new_remote(server);
 
-    new_remote(server);
     ev_io_start(EV_A_ & server->recv_ctx->io);
 }
 
