@@ -132,7 +132,6 @@ resolv_cb(struct sockaddr *addr, void *data)
         if (remote == NULL)
             return;
 
-        remote->src_addr = query->src_addr;
         int s = connect(remote->fd, addr, get_sockaddr_len(addr));
 
         if (s == -1) {
@@ -436,10 +435,8 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
 #endif
 
 #elif defined MODULE_REMOTE
-    crypto_t *crypto = server->listen_ctx->crypto;
-
     rx += buf->len;
-
+    crypto_t *crypto = server->listen_ctx->crypto;
     int err = crypto->encrypt_all(buf, crypto->cipher, buf_size);
     if (err) {
         // drop the packet silently
@@ -448,36 +445,13 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
 
 #endif
 
-#ifdef MODULE_REDIR
-    int sourcefd = create_tproxy(remote->destaddr);
-    if (sourcefd < 0) {
-        ERROR("[udp] remote_recv_socket");
-        close_and_free_remote(EV_A_ remote);
-        goto CLEAN_UP;
-    }
+    int s = send(server->sfd, buf->data, buf->len, 0);
 
-    int s = sendto(sourcefd, buf->data, buf->len, 0,
-                   (struct sockaddr *)remote->src_addr,
-                   get_sockaddr_len((struct sockaddr *)remote->src_addr));
-    if (s == -1) {
-        ERROR("[udp] remote_recv_sendto");
-        close(sourcefd);
-        close_and_free_remote(EV_A_ remote);
-        goto CLEAN_UP;
-    }
-    close(sourcefd);
-
-#else
-    int s = sendto(server->fd, buf->data, buf->len, 0,
-                   (struct sockaddr *)remote->src_addr,
-                   get_sockaddr_len((struct sockaddr *)remote->src_addr));
     if (s == -1) {
         ERROR("[udp] remote_recv_sendto");
         close_and_free_remote(EV_A_ remote);
         goto CLEAN_UP;
     }
-
-#endif
 
     // UDP packet handled successfully,
     // trigger the timer and add remote back to cache
@@ -486,6 +460,9 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
     cork_dllist_add(&server->remotes, &remote->entries);
 
 CLEAN_UP:
+#ifdef MODULE_REDIR
+    close(server->sfd);
+#endif
     free_buffer(buf);
 }
 
@@ -508,22 +485,23 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
     server_t *server = (server_t *)w;
     buffer_t *buf    = new_buffer(buf_size);
 
-    ssocks_addr_t *destaddr = ss_calloc(1, sizeof(ssocks_addr_t));
-    struct sockaddr_storage *src_addr = ss_calloc(1, sizeof(struct sockaddr_storage));
+    int s;
+    ssocks_addr_t *destaddr = &(ssocks_addr_t) {};
+    struct sockaddr_storage src_addr = {};
 
 #ifdef MODULE_REDIR
     char control_buffer[64] = { 0 };
 
     struct msghdr msg = {
-        .msg_name       = src_addr,
-        .msg_namelen    = sizeof(*src_addr),
+        .msg_name       = &src_addr,
+        .msg_namelen    = sizeof(src_addr),
         .msg_control    = control_buffer,
         .msg_controllen = sizeof(control_buffer),
         .msg_iov = (struct iovec []) {
             (struct iovec) {
                 .iov_base = buf->data,
                 .iov_len  = buf_size
-            }            
+            }
         },
         .msg_iovlen = 1
     };
@@ -534,16 +512,23 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
         goto CLEAN_UP;
     }
 
-    destaddr->addr = ss_calloc(1, sizeof(*destaddr->addr));
+    destaddr->addr = &(struct sockaddr_storage) {};
     if (getdestaddr_dgram(&msg, destaddr->addr)) {
         LOGE("[udp] unable to determine destination address");
         goto CLEAN_UP;
     }
 
+    int sourcefd = create_tproxy(destaddr->addr);
+    if (sourcefd < 0) {
+        ERROR("[udp] server_recvmsg_socket");
+        goto CLEAN_UP;
+    }
+
+    server->sfd = sourcefd;
 #else
-    socklen_t src_addr_len = sizeof(*src_addr);
     ssize_t r = recvfrom(server->fd, buf->data, buf_size,
-                         0, (struct sockaddr *)src_addr, &src_addr_len);
+                         0, (struct sockaddr *)&src_addr,
+                         &(socklen_t) { sizeof(src_addr) });
 
     if (r == -1) {
         ERROR("[udp] server_recv_recvfrom");
@@ -551,6 +536,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
     }
 
     buf->len = r;
+    server->sfd = server->fd;
 #endif
 
     if (verbose) {
@@ -559,6 +545,12 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             LOGI("[udp] server_recv fragmentation, "
                  "      MTU should at least be: " SSIZE_FMT, buf->len + DGRAM_PKT_HDR_SIZE);
         }
+    }
+
+    s = connect(server->sfd, (struct sockaddr *)&src_addr, sizeof(src_addr));
+    if (s == -1) {
+        ERROR("connect");
+        goto CLEAN_UP;
     }
 
 #ifdef MODULE_REMOTE
@@ -576,12 +568,12 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
     int offset = parse_ssocks_header(buf, destaddr, 0);
 
     if (offset < 0) {
-        report_addr(src_addr, "invalid destination address");
+        report_addr(&src_addr, "invalid destination address");
         goto CLEAN_UP;
     }
 
     if (buf->len < offset) {
-        report_addr(src_addr, "invalid request length");
+        report_addr(&src_addr, "invalid request length");
         goto CLEAN_UP;
     }
 
@@ -607,10 +599,9 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             LOGI("[udp] connecting to %s:%d", destaddr->dname, ntohs(destaddr->port));
         }
 
-        query_t *query  = ss_calloc(1, sizeof(query_t));
+        query_t *query  = ss_calloc(1, sizeof(*query));
         query->buf      = buf;
         query->server   = server;
-        query->src_addr = src_addr;
 
         resolv_start(destaddr->dname, destaddr->port,
                      resolv_cb, resolv_free_cb, query);
@@ -628,7 +619,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
         }
 
         resolv_cb((struct sockaddr *)destaddr->addr,
-                  &(query_t){ buf, server, src_addr });
+                  &(query_t){ buf, server });
     }
 /////////////////////////////
 #elif defined MODULE_LOCAL
@@ -639,12 +630,8 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
     if (remote == NULL)
         goto CLEAN_UP;
 
-    remote->src_addr = src_addr;
 // tproxy module ////////////
-#ifdef MODULE_REDIR
-    remote->destaddr = destaddr->addr;
-// tunnel module ////////////
-#elif defined MODULE_TUNNEL
+#ifdef MODULE_TUNNEL
     destaddr = &listen_ctx->destaddr;
 // socks5 module ////////////
 #elif defined MODULE_SOCKS
@@ -744,8 +731,7 @@ bailed: {
         }
     }
 
-    int s = connect(remote->fd, (struct sockaddr *)remote_addr, sizeof(*remote_addr));
-
+    s = connect(remote->fd, (struct sockaddr *)remote_addr, sizeof(*remote_addr));
     if (s == -1) {
         ERROR("connect");
         close_and_free_remote(EV_A_ remote);
@@ -753,7 +739,6 @@ bailed: {
     }
 
     s = send(remote->fd, buf->data, buf->len, 0);
-
     if (s == -1) {
         ERROR("[udp] server_recv_sendto");
         close_and_free_remote(EV_A_ remote);

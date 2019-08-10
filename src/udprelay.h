@@ -44,13 +44,12 @@
 typedef struct query {
     buffer_t *buf;
     struct server *server;
-    struct sockaddr_storage *src_addr;
 } query_t;
 #endif
 
 typedef struct server {
     ev_io io;
-    int fd;
+    int fd, sfd;
 
     struct remote *remote;
     struct listen_ctx *listen_ctx;
@@ -74,11 +73,6 @@ typedef struct remote {
 
     struct server *server;
     struct cork_dllist_item entries;
-
-    struct sockaddr_storage *src_addr;
-#ifdef MODULE_REDIR
-    struct sockaddr_storage *destaddr;
-#endif
 } remote_t;
 
 #endif // _UDPRELAY_H
