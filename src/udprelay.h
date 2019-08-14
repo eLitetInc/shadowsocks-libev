@@ -43,7 +43,7 @@
 #ifdef MODULE_REMOTE
 typedef struct query {
     buffer_t *buf;
-    struct server *server;
+    struct remote *remote;
 } query_t;
 #endif
 
@@ -73,6 +73,7 @@ typedef struct remote {
 
     struct server *server;
     struct cork_dllist_item entries;
+    struct sockaddr *saddr;
 } remote_t;
 
 #endif // _UDPRELAY_H

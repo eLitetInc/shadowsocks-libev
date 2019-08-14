@@ -114,24 +114,18 @@ resolv_free_cb(void *data)
 static void
 resolv_cb(struct sockaddr *addr, void *data)
 {
-    query_t *query           = (query_t *)data;
-    server_t *server         = query->server;
-    listen_ctx_t *listen_ctx = server->listen_ctx;
+    query_t  *query  = (query_t *)data;
+    remote_t *remote = query->remote;
+    server_t *server = remote->server;
 
     if (server == NULL)
         return;
 
-    struct ev_loop *loop = listen_ctx->loop;
+    struct ev_loop *loop = server->listen_ctx->loop;
 
     if (addr == NULL) {
         LOGE("[udp] unable to resolve");
     } else {
-        remote_t *remote =
-            create_remote(EV_A_ NULL/*listen_ctx->addr*/, server);
-
-        if (remote == NULL)
-            return;
-
         int s = connect(remote->fd, addr, get_sockaddr_len(addr));
 
         if (s == -1) {
@@ -313,7 +307,6 @@ create_remote(EV_P_ struct sockaddr_storage *addr, server_t *server)
     return remote;
 }
 
-
 static remote_t *
 new_remote(int fd, int timeout)
 {
@@ -345,9 +338,8 @@ close_and_free_remote(EV_P_ remote_t *remote)
 
         close(remote->fd);
 #ifdef MODULE_SOCKS
-        if (remote->abuf != NULL) {
+        if (remote->abuf != NULL)
             free_buffer(remote->abuf);
-        }
 #endif
         ss_free(remote);
     }
@@ -445,7 +437,8 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
 
 #endif
 
-    int s = send(server->sfd, buf->data, buf->len, 0);
+    int s = sendto(server->sfd, buf->data, buf->len, 0,
+                   remote->saddr, get_sockaddr_len(remote->saddr));
 
     if (s == -1) {
         ERROR("[udp] remote_recv_sendto");
@@ -485,16 +478,15 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
     server_t *server = (server_t *)w;
     buffer_t *buf    = new_buffer(buf_size);
 
-    int s;
     ssocks_addr_t *destaddr = &(ssocks_addr_t) {};
-    struct sockaddr_storage src_addr = {};
+    struct sockaddr_storage *saddr = ss_calloc(1, sizeof(*saddr));
 
 #ifdef MODULE_REDIR
     char control_buffer[64] = { 0 };
 
     struct msghdr msg = {
-        .msg_name       = &src_addr,
-        .msg_namelen    = sizeof(src_addr),
+        .msg_name       = saddr,
+        .msg_namelen    = sizeof(*saddr),
         .msg_control    = control_buffer,
         .msg_controllen = sizeof(control_buffer),
         .msg_iov = (struct iovec []) {
@@ -527,8 +519,8 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
     server->sfd = sourcefd;
 #else
     ssize_t r = recvfrom(server->fd, buf->data, buf_size,
-                         0, (struct sockaddr *)&src_addr,
-                         &(socklen_t) { sizeof(src_addr) });
+                         0, (struct sockaddr *)saddr,
+                         &(socklen_t) { sizeof(*saddr) });
 
     if (r == -1) {
         ERROR("[udp] server_recv_recvfrom");
@@ -547,12 +539,6 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
         }
     }
 
-    s = connect(server->sfd, (struct sockaddr *)&src_addr, sizeof(src_addr));
-    if (s == -1) {
-        ERROR("connect");
-        goto CLEAN_UP;
-    }
-
 #ifdef MODULE_REMOTE
 // ssocks module ////////////
     tx += buf->len;
@@ -567,13 +553,8 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
 
     int offset = parse_ssocks_header(buf, destaddr, 0);
 
-    if (offset < 0) {
-        report_addr(&src_addr, "invalid destination address");
-        goto CLEAN_UP;
-    }
-
-    if (buf->len < offset) {
-        report_addr(&src_addr, "invalid request length");
+    if (offset < 0 || buf->len < offset) {
+        report_addr(saddr, "invalid request length");
         goto CLEAN_UP;
     }
 
@@ -584,6 +565,14 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
         LOGI("[udp] server_recv_sendto fragmentation, "
              "      MTU should at least be: " SSIZE_FMT, buf->len + DGRAM_PKT_HDR_SIZE);
     }
+
+    remote_t *remote =
+        create_remote(EV_A_ NULL/*listen_ctx->addr*/, server);
+
+    if (remote == NULL)
+        goto CLEAN_UP;
+
+    remote->saddr = (struct sockaddr *)saddr;
 
     if (destaddr->dname != NULL) {
         null_terminate(destaddr->dname, destaddr->dname_len);
@@ -599,9 +588,9 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             LOGI("[udp] connecting to %s:%d", destaddr->dname, ntohs(destaddr->port));
         }
 
-        query_t *query  = ss_calloc(1, sizeof(*query));
-        query->buf      = buf;
-        query->server   = server;
+        query_t *query = ss_malloc(sizeof(*query));
+        query->buf     = buf;
+        query->remote  = remote;
 
         resolv_start(destaddr->dname, destaddr->port,
                      resolv_cb, resolv_free_cb, query);
@@ -619,7 +608,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
         }
 
         resolv_cb((struct sockaddr *)destaddr->addr,
-                  &(query_t){ buf, server });
+                  &(query_t){ buf, remote });
     }
 /////////////////////////////
 #elif defined MODULE_LOCAL
@@ -731,7 +720,7 @@ bailed: {
         }
     }
 
-    s = connect(remote->fd, (struct sockaddr *)remote_addr, sizeof(*remote_addr));
+    int s = connect(remote->fd, (struct sockaddr *)remote_addr, sizeof(*remote_addr));
     if (s == -1) {
         ERROR("connect");
         close_and_free_remote(EV_A_ remote);
@@ -743,6 +732,7 @@ bailed: {
         ERROR("[udp] server_recv_sendto");
         close_and_free_remote(EV_A_ remote);
     } else {
+        remote->saddr = (struct sockaddr *)saddr;
         // start remote io
         ev_io_start(EV_A_ & remote->io);
     }
