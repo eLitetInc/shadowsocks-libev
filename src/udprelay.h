@@ -61,7 +61,7 @@ typedef struct server {
 typedef struct remote {
     ev_io io;
     ev_timer watcher;
-    int fd;
+    int fd, sfd;
     int direct;
 
 #ifdef MODULE_LOCAL

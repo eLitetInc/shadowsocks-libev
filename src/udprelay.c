@@ -290,14 +290,14 @@ create_remote(EV_P_ struct sockaddr_storage *addr, server_t *server)
         cork_dllist_remove(&remote->entries);
         ev_timer_again(EV_A_ & remote->watcher);
     } else {
-        // Bind to any port
+        // bind to any port
         int remotefd = remote_socket(addr, listen_ctx->iface);
         if (remotefd < 0) {
             ERROR("[udp] udprelay bind() error");
             return NULL;
         }
 
-        // Init remote
+        // init remote
         remote = new_remote(remotefd, listen_ctx->timeout);
         remote->server = server;
 
@@ -437,7 +437,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
 
 #endif
 
-    int s = sendto(server->sfd, buf->data, buf->len, 0,
+    int s = sendto(remote->sfd, buf->data, buf->len, 0,
                    remote->saddr, get_sockaddr_len(remote->saddr));
 
     if (s == -1) {
@@ -454,7 +454,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
 
 CLEAN_UP:
 #ifdef MODULE_REDIR
-    close(server->sfd);
+    close(remote->sfd);
 #endif
     free_buffer(buf);
 }
@@ -478,6 +478,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
     server_t *server = (server_t *)w;
     buffer_t *buf    = new_buffer(buf_size);
 
+    int sourcefd;
     ssocks_addr_t *destaddr = &(ssocks_addr_t) {};
     struct sockaddr_storage *saddr = ss_calloc(1, sizeof(*saddr));
 
@@ -510,25 +511,23 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
         goto CLEAN_UP;
     }
 
-    int sourcefd = create_tproxy(destaddr->addr);
+    sourcefd = create_tproxy(destaddr->addr);
     if (sourcefd < 0) {
         ERROR("[udp] server_recvmsg_socket");
         goto CLEAN_UP;
     }
 
-    server->sfd = sourcefd;
 #else
-    ssize_t r = recvfrom(server->fd, buf->data, buf_size,
-                         0, (struct sockaddr *)saddr,
-                         &(socklen_t) { sizeof(*saddr) });
+    buf->len = recvfrom(sourcefd = server->fd,
+                        buf->data, buf_size, 0,
+                        (struct sockaddr *)saddr,
+                        &(socklen_t) { sizeof(*saddr) });
 
-    if (r == -1) {
+    if (buf->len == -1) {
         ERROR("[udp] server_recv_recvfrom");
         goto CLEAN_UP;
     }
 
-    buf->len = r;
-    server->sfd = server->fd;
 #endif
 
     if (verbose) {
@@ -541,10 +540,8 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
 
 #ifdef MODULE_REMOTE
 // ssocks module ////////////
-    tx += buf->len;
 
     crypto_t *crypto = server->listen_ctx->crypto;
-
     int err = crypto->decrypt_all(buf, crypto->cipher, buf_size);
     if (err) {
         // drop the packet silently
@@ -552,12 +549,12 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
     }
 
     int offset = parse_ssocks_header(buf, destaddr, 0);
-
     if (offset < 0 || buf->len < offset) {
         report_addr(saddr, "invalid request length");
         goto CLEAN_UP;
     }
 
+    tx += buf->len;
     buf->len -= offset;
     memmove(buf->data, buf->data + offset, buf->len);
 
@@ -572,6 +569,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
     if (remote == NULL)
         goto CLEAN_UP;
 
+    remote->sfd   = sourcefd;
     remote->saddr = (struct sockaddr *)saddr;
 
     if (destaddr->dname != NULL) {
@@ -732,6 +730,7 @@ bailed: {
         ERROR("[udp] server_recv_sendto");
         close_and_free_remote(EV_A_ remote);
     } else {
+        remote->sfd   = sourcefd;
         remote->saddr = (struct sockaddr *)saddr;
         // start remote io
         ev_io_start(EV_A_ & remote->io);
