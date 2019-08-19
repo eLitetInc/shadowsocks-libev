@@ -91,6 +91,22 @@
 #define INADDR_LOOPBACK 0x7f000001UL
 #endif
 
+#ifndef MAX_FRAG
+#define MAX_FRAG 1
+#endif
+
+#ifdef USE_NFCONNTRACK_TOS
+
+#ifndef MARK_MAX_PACKET
+#define MARK_MAX_PACKET 10
+#endif
+
+#ifndef MARK_MASK_PREFIX
+#define MARK_MASK_PREFIX 0xDC00
+#endif
+
+#endif
+
 #define MAX_CONNECT_TIMEOUT 10
 #define MAX_REQUEST_TIMEOUT 30
 #define MIN_UDP_TIMEOUT     10
@@ -165,7 +181,7 @@ static const ss_service_t service_ports[] = {
  * test from newest to the latest version and see if
  * mptcp is enabled.
  */
-static const 
+static const
 char mptcp_enabled_values[] =
 #ifdef MPTCP_ENABLED
     { MPTCP_ENABLED, 0 };

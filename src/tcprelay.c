@@ -63,6 +63,7 @@ extern int acl;
 extern int verbose;
 extern int remote_dns;
 extern int ipv6first;
+extern int fast_open;
 
 #ifdef __ANDROID__
 extern int vpn;
@@ -105,7 +106,7 @@ new_remote(server_t *server)
     remote->recv_ctx->connected = 0;
     remote->send_ctx->remote    = remote;
     remote->send_ctx->connected = 0;
-    
+
     remote->server = server;
 
     return remote;
@@ -292,7 +293,7 @@ init_remote(EV_P_ remote_t *remote, remote_cnf_t *conf)
 
 #elif defined MODULE_REMOTE
 remote_t *
-new_remote(int fd)
+new_remote(server_t *server)
 {
     if (verbose)
         remote_conn++;
@@ -306,15 +307,12 @@ new_remote(int fd)
     balloc(remote->buf, SOCKET_BUF_SIZE);
     memset(remote->recv_ctx, 0, sizeof(remote_ctx_t));
     memset(remote->send_ctx, 0, sizeof(remote_ctx_t));
-    remote->fd                  = fd;
     remote->recv_ctx->remote    = remote;
     remote->recv_ctx->connected = 0;
     remote->send_ctx->remote    = remote;
     remote->send_ctx->connected = 0;
-    remote->server              = NULL;
+    remote->server              = server;
 
-    ev_io_init(&remote->recv_ctx->io, remote_recv_cb, fd, EV_READ);
-    ev_io_init(&remote->send_ctx->io, remote_send_cb, fd, EV_WRITE);
 
     return remote;
 }
@@ -383,6 +381,114 @@ server_timeout_cb(EV_P_ ev_timer *watcher, int revents)
     close_and_free_server(EV_A_ server);
 }
 
+int
+create_remote(EV_P_ remote_t *remote,
+              struct sockaddr_storage *addr)
+{
+    server_t *server = remote->server;
+    listen_ctx_t *listen_ctx = server->listen_ctx;
+
+    // initialize remote socks
+    int remotefd = socket(addr->ss_family, SOCK_STREAM, IPPROTO_TCP);
+    if (remotefd == -1) {
+        ERROR("socket");
+        close(remotefd);
+        return -1;
+    }
+
+    int opt = 1;
+    setsockopt(remotefd, SOL_TCP, TCP_NODELAY, &opt, sizeof(opt));
+#ifdef SO_NOSIGPIPE
+    setsockopt(remotefd, SOL_SOCKET, SO_NOSIGPIPE, &opt, sizeof(opt));
+#endif
+    setsockopt(remotefd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+    if (setnonblocking(remotefd) == -1)
+        ERROR("setnonblocking");
+
+    if (listen_ctx->addr) {
+        socklen_t addrlen = 0;
+        struct sockaddr_storage *storage = NULL;
+        switch (listen_ctx->addr->ss_family) {
+            case AF_INET:
+                addrlen = sizeof(struct sockaddr_in);
+                storage = (struct sockaddr_storage *)&(struct sockaddr_in) {
+                    .sin_family = AF_INET,
+                    .sin_addr = ((struct sockaddr_in *)listen_ctx->addr)->sin_addr
+                };
+                break;
+            case AF_INET6:
+                addrlen = sizeof(struct sockaddr_in6);
+                storage = (struct sockaddr_storage *)&(struct sockaddr_in6) {
+                    .sin6_family = AF_INET6,
+                    .sin6_addr = ((struct sockaddr_in6 *)listen_ctx->addr)->sin6_addr,
+                };
+                break;
+            default:
+                return -1;
+        }
+
+        if (bind(remotefd, (struct sockaddr *)storage, addrlen) != 0) {
+            ERROR("bind");
+            close(remotefd);
+            return -1;
+        }
+    }
+
+#ifdef SET_INTERFACE
+    if (listen_ctx->iface) {
+        if (setinterface(remotefd, listen_ctx->iface) == -1) {
+            ERROR("setinterface");
+            close(remotefd);
+            return -1;
+        }
+    }
+#endif
+
+    remote->fd = remotefd;
+
+    if (fast_open) {
+        ssize_t s = sendto_idempotent(remote->fd,
+                                      remote->buf->data + remote->buf->idx,
+                                      remote->buf->len, (struct sockaddr *)remote->addr
+#ifdef TCP_FASTOPEN_WINSOCK
+                                      , &remote->olap, &remote->connect_ex_done
+#endif
+        );
+
+        if (s == -1) {
+            if (errno == CONNECT_IN_PROGRESS) {
+                // The remote server doesn't support tfo or it's the first connection to the server.
+                // It will automatically fall back to conventional TCP.
+            } else if (errno == EOPNOTSUPP || errno == EPROTONOSUPPORT ||
+                       errno == ENOPROTOOPT) {
+                // Disable fast open as it's not supported
+                fast_open = 0;
+                LOGE("fast open is not supported on this platform");
+            } else {
+                ERROR("fast_open_connect");
+            }
+        } else {
+            server->buf->idx += s;
+            server->buf->len -= s;
+        }
+    } else {
+        int r = connect(remotefd, (struct sockaddr *)addr,
+                        get_sockaddr_len((struct sockaddr *)addr));
+
+        if (r == -1 && errno != CONNECT_IN_PROGRESS) {
+            ERROR("connect");
+            close_and_free_remote(EV_A_ remote);
+            return -1;
+        }
+    }
+
+    ev_io_init(&remote->recv_ctx->io, remote_recv_cb, remotefd, EV_READ);
+    ev_io_init(&remote->send_ctx->io, remote_send_cb, remotefd, EV_WRITE);
+
+    return remotefd;
+}
+
 #ifndef __MINGW32__
 static void
 stat_update_cb(EV_P_ ev_timer *watcher, int revents)
@@ -443,8 +549,7 @@ stat_update_cb(EV_P_ ev_timer *watcher, int revents)
 
         unlink(claddr.sun_path);
     } else {
-        struct sockaddr_storage storage;
-        memset(&storage, 0, sizeof(struct sockaddr_storage));
+        struct sockaddr_storage storage = {};
         if (get_sockaddr(ip_addr.host, ip_addr.port, &storage, 1, ipv6first) == -1) {
             ERROR("failed to parse the manager addr");
             return;
@@ -907,6 +1012,14 @@ start_relay(jconf_t *conf,
 
     cork_dllist_init(&listeners);
 
+    struct sockaddr_storage *laddr
+        = ss_calloc(1, sizeof(*laddr));
+    if (get_sockaddr(conf->local_addr, conf->local_port,
+                     laddr, 1, conf->ipv6_first) == -1)
+    {
+        FATAL("failed to resolve %s", conf->local_addr);
+    }
+
     for (int i = 0; i < conf->remote_num; i++) {
         ss_remote_t *r = conf->remotes[i];
         char *host     = r->addr,
@@ -944,8 +1057,8 @@ start_relay(jconf_t *conf,
          * but it is impossible to listen on 0.0.0.0 and :: at the same time,
          * unless `bindv6only' is enabled.
          */
-        struct sockaddr_storage *storage =
-                ss_calloc(1, sizeof(struct sockaddr_storage));
+        struct sockaddr_storage *storage
+                = &(struct sockaddr_storage) {};
         if (get_sockaddr(host, port, storage, 1, conf->ipv6_first) == -1) {
             FATAL("failed to resolve %s", host);
         }
@@ -988,7 +1101,7 @@ start_relay(jconf_t *conf,
 
         listen_ctx_t listen_ctx = {
             .iface   = iface,
-            .addr    = storage,
+            .addr    = laddr,
             .crypto  = crypto,
             .timeout = atoi(conf->timeout),
             .loop    = loop

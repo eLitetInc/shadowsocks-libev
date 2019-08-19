@@ -50,7 +50,6 @@ struct dscptracker {
 };
 #endif
 
-//typedef struct server server_t;
 typedef struct query {
     struct server *server;
     char *hostname;
@@ -147,12 +146,12 @@ void close_and_free_remote(EV_P_ remote_t *remote);
 void free_server(server_t *server);
 void close_and_free_server(EV_P_ server_t *server);
 
+remote_t *new_remote(server_t *server);
 #ifdef MODULE_REMOTE
-remote_t *new_remote(int fd);
 server_t *new_server(int fd, listen_ctx_t *listener);
 void server_timeout_cb(EV_P_ ev_timer *watcher, int revents);
+int create_remote(EV_P_ remote_t *remote, struct sockaddr_storage *addr);
 #elif defined MODULE_LOCAL
-remote_t *new_remote(server_t *server);
 server_t *new_server(int fd);
 void remote_timeout_cb(EV_P_ ev_timer *watcher, int revents);
 int init_remote(EV_P_ remote_t *remote, remote_cnf_t *conf);

@@ -57,32 +57,6 @@
 #include "winsock.h"
 #include "tcprelay.h"
 
-#ifndef SSMAXCONN
-#define SSMAXCONN 1024
-#endif
-
-#ifndef MAX_FRAG
-#define MAX_FRAG 1
-#endif
-
-#ifdef USE_NFCONNTRACK_TOS
-
-#ifndef MARK_MAX_PACKET
-#define MARK_MAX_PACKET 10
-#endif
-
-#ifndef MARK_MASK_PREFIX
-#define MARK_MASK_PREFIX 0xDC00
-#endif
-
-#endif
-
-static remote_t *
-connect_to_remote(EV_P_ server_t *server, struct sockaddr_storage *addr);
-
-static void resolv_cb(struct sockaddr *addr, void *data);
-static void resolv_free_cb(void *data);
-
 int verbose = 0;
 int acl = 0;
 int no_delay = 0;
@@ -98,117 +72,10 @@ report_addr(EV_P_ server_t *server, const char *info)
 
     if (verbose) {
         struct sockaddr_storage addr = { 0 };
-        socklen_t len = sizeof(struct sockaddr_storage);
-        if (getpeername(server->fd, (struct sockaddr *)&addr, &len) == 0) {
+        if (getpeername(server->fd, (struct sockaddr *)&addr, &(socklen_t) { sizeof(addr) }) == 0) {
             LOGE("failed to handshake with %s: %s", sockaddr_readable("%a", &addr), info);
         }
     }
-}
-
-static remote_t *
-connect_to_remote(EV_P_ server_t *server,
-                  struct sockaddr_storage *addr)
-{
-    listen_ctx_t *listen_ctx = server->listen_ctx;
-    socklen_t addr_len = get_sockaddr_len((struct sockaddr *)addr);
-
-    // initialize remote socks
-    int sockfd = socket(addr->ss_family, SOCK_STREAM, IPPROTO_TCP);
-    if (sockfd == -1) {
-        ERROR("socket");
-        close(sockfd);
-        return NULL;
-    }
-
-    int opt = 1;
-    setsockopt(sockfd, SOL_TCP, TCP_NODELAY, &opt, sizeof(opt));
-#ifdef SO_NOSIGPIPE
-    setsockopt(sockfd, SOL_SOCKET, SO_NOSIGPIPE, &opt, sizeof(opt));
-#endif
-    setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-
-    if (setnonblocking(sockfd) == -1)
-        ERROR("setnonblocking");
-
-    if (listen_ctx->addr) {
-        socklen_t addrlen = 0;
-        struct sockaddr_storage *storage = NULL;
-        switch (listen_ctx->addr->ss_family) {
-            case AF_INET:
-                addrlen = sizeof(struct sockaddr_in);
-                storage = (struct sockaddr_storage *)&(struct sockaddr_in) {
-                    .sin_family = AF_INET,
-                    .sin_addr = ((struct sockaddr_in *)listen_ctx->addr)->sin_addr
-                };
-                break;
-            case AF_INET6:
-                addrlen = sizeof(struct sockaddr_in6);
-                storage = (struct sockaddr_storage *)&(struct sockaddr_in6) {
-                    .sin6_family = AF_INET6,
-                    .sin6_addr = ((struct sockaddr_in6 *)listen_ctx->addr)->sin6_addr,
-                };
-                break;
-            default:
-                return NULL;
-        }
-
-        if (bind(sockfd, (struct sockaddr *)storage, addrlen) != 0) {
-            ERROR("bind");
-            close(sockfd);
-            return NULL;
-        }
-    }
-
-#ifdef SET_INTERFACE
-    if (listen_ctx->iface) {
-        if (setinterface(sockfd, listen_ctx->iface) == -1) {
-            ERROR("setinterface");
-            close(sockfd);
-            return NULL;
-        }
-    }
-#endif
-
-    remote_t *remote = new_remote(sockfd);
-
-    if (fast_open) {
-        ssize_t s = sendto_idempotent(remote->fd,
-                                      remote->buf->data + remote->buf->idx,
-                                      remote->buf->len, (struct sockaddr *)remote->addr
-#ifdef TCP_FASTOPEN_WINSOCK
-                                      , &remote->olap, &remote->connect_ex_done
-#endif
-        );
-
-        if (s == -1) {
-            if (errno == CONNECT_IN_PROGRESS) {
-                // The remote server doesn't support tfo or it's the first connection to the server.
-                // It will automatically fall back to conventional TCP.
-            } else if (errno == EOPNOTSUPP || errno == EPROTONOSUPPORT ||
-                       errno == ENOPROTOOPT) {
-                // Disable fast open as it's not supported
-                fast_open = 0;
-                LOGE("fast open is not supported on this platform");
-            } else {
-                ERROR("fast_open_connect");
-            }
-        } else {
-            server->buf->idx += s;
-            server->buf->len -= s;
-        }
-    }
-
-    if (!fast_open) {
-        int r = connect(sockfd, (struct sockaddr *)addr, addr_len);
-
-        if (r == -1 && errno != CONNECT_IN_PROGRESS) {
-            ERROR("connect");
-            close_and_free_remote(EV_A_ remote);
-            return NULL;
-        }
-    }
-
-    return remote;
 }
 
 #ifdef USE_NFCONNTRACK_TOS
@@ -302,21 +169,48 @@ setTosFromConnmark(remote_t *remote, server_t *server)
 
 #endif
 
+static void
+resolv_cb(struct sockaddr *addr, void *data)
+{
+    server_t *server = (server_t *)data;
+    if (server == NULL)
+        return;
+
+    remote_t *remote     = server->remote;
+    struct ev_loop *loop = server->listen_ctx->loop;
+
+    if (remote == NULL) {
+        close_and_free_server(EV_A_ server);
+        return;
+    }
+
+    if (addr == NULL) {
+        close_and_free_server(EV_A_ server);
+        close_and_free_remote(EV_A_ remote);
+    } else {
+        int r = create_remote(EV_A_ remote,
+                    (struct sockaddr_storage *)addr);
+
+        if (r == -1) {
+            close_and_free_server(EV_A_ server);
+            close_and_free_remote(EV_A_ remote);
+        } else {
+            // listen to remote connected event
+            ev_io_start(EV_A_ & remote->send_ctx->io);
+        }
+    }
+}
+
 void
 server_recv_cb(EV_P_ ev_io *w, int revents)
 {
     server_ctx_t *server_recv_ctx = (server_ctx_t *)w;
-    server_t *server              = server_recv_ctx->server;
-    crypto_t *crypto              = server->crypto;
-    remote_t *remote              = NULL;
+    server_t *server = server_recv_ctx->server;
+    crypto_t *crypto = server->crypto;
+    remote_t *remote = server->stage == STAGE_STREAM ?
+                            server->remote : new_remote(server);
 
-    buffer_t *buf = server->buf;
-
-    if (server->stage == STAGE_STREAM) {
-        remote = server->remote;
-        buf    = remote->buf;
-    }
-
+    buffer_t *buf = remote->buf;
     ssize_t r = recv(server->fd, buf->data, SOCKET_BUF_SIZE, 0);
 
     if (r == 0) {
@@ -369,20 +263,17 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
         case STAGE_INIT: {
             ssocks_addr_t destaddr = { 0 };
             int offset = parse_ssocks_header(server->buf, &destaddr, 0);
+            server->remote = remote;
 
-            if (offset < 0) {
-                report_addr(EV_A_ server, "invalid destination address");
-                return;
-            }
-
-            if (server->buf->len < offset) {
+            if (offset < 0 || server->buf->len < offset) {
                 report_addr(EV_A_ server, "invalid request length");
                 return;
-            } else {
-                server->buf->len -= offset;
-                memmove(server->buf->data, server->buf->data + offset, server->buf->len);
             }
 
+            server->buf->len -= offset;
+            server->buf->idx += offset;
+
+            ev_io_stop(EV_A_ & server_recv_ctx->io);
             if (destaddr.dname != NULL) {
                 null_terminate(destaddr.dname, destaddr.dname_len);
 
@@ -396,16 +287,8 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                     LOGI("connecting to %s:%d", destaddr.dname, ntohs(destaddr.port));
                 }
 
-                ev_io_stop(EV_A_ & server_recv_ctx->io);
-
-                query_t *query  = ss_malloc(sizeof(query_t));
-                query->server   = server;
-                query->hostname = destaddr.dname;
-
                 server->stage = STAGE_RESOLVE;
-
-                resolv_start(destaddr.dname, destaddr.port,
-                             resolv_cb, resolv_free_cb, query);
+                resolv_start(destaddr.dname, destaddr.port, resolv_cb, NULL, server);
             } else {
                 if (acl && search_acl(ACL_ATYP_IP, destaddr.addr, ACL_BLOCKLIST)) {
                     if (verbose)
@@ -418,31 +301,8 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                     LOGI("connecting to %s",
                          sockaddr_readable("%a:%p", destaddr.addr));
                 }
-                remote_t *remote = connect_to_remote(EV_A_ server, destaddr.addr);
 
-                if (remote == NULL) {
-                    LOGE("connect error");
-                    close_and_free_server(EV_A_ server);
-                    return;
-                } else {
-                    server->remote = remote;
-                    remote->server = server;
-
-                    // XXX: should handle buffer carefully
-                    if (server->buf->len > 0) {
-                        brealloc(remote->buf, server->buf->len, SOCKET_BUF_SIZE);
-                        memcpy(remote->buf->data, server->buf->data + server->buf->idx,
-                               server->buf->len);
-                        remote->buf->len = server->buf->len;
-                        remote->buf->idx = 0;
-                        server->buf->len = 0;
-                        server->buf->idx = 0;
-                    }
-
-                    // waiting on remote connected event
-                    ev_io_stop(EV_A_ & server_recv_ctx->io);
-                    ev_io_start(EV_A_ & remote->send_ctx->io);
-                }
+                resolv_cb((struct sockaddr *)destaddr.addr, server);
             }
         } return;
         case STAGE_STREAM: {
@@ -521,60 +381,6 @@ server_send_cb(EV_P_ ev_io *w, int revents)
                 close_and_free_server(EV_A_ server);
                 return;
             }
-        }
-    }
-}
-
-static void
-resolv_free_cb(void *data)
-{
-    query_t *query = (query_t *)data;
-
-    if (query != NULL) {
-        ss_free(query);
-    }
-}
-
-static void
-resolv_cb(struct sockaddr *addr, void *data)
-{
-    query_t *query   = (query_t *)data;
-    server_t *server = query->server;
-
-    if (server == NULL)
-        return;
-
-    struct ev_loop *loop = server->listen_ctx->loop;
-
-    if (addr == NULL) {
-        LOGE("unable to resolve %s", query->hostname);
-        close_and_free_server(EV_A_ server);
-    } else {
-        if (verbose) {
-            LOGI("successfully resolved %s", query->hostname);
-        }
-
-        remote_t *remote = connect_to_remote(EV_A_ server, (struct sockaddr_storage *)addr);
-
-        if (remote == NULL) {
-            close_and_free_server(EV_A_ server);
-        } else {
-            server->remote = remote;
-            remote->server = server;
-
-            // XXX: should handle buffer carefully
-            if (server->buf->len > 0) {
-                brealloc(remote->buf, server->buf->len, SOCKET_BUF_SIZE);
-                memcpy(remote->buf->data, server->buf->data + server->buf->idx,
-                       server->buf->len);
-                remote->buf->len = server->buf->len;
-                remote->buf->idx = 0;
-                server->buf->len = 0;
-                server->buf->idx = 0;
-            }
-
-            // listen to remote connected event
-            ev_io_start(EV_A_ & remote->send_ctx->io);
         }
     }
 }

@@ -277,7 +277,6 @@ server_stream(EV_P_ ev_io *w, buffer_t *buf)
     }
 
     if (!remote->send_ctx->connected) {
-
         remote->buf->idx = 0;
 
         if (!fast_open) {

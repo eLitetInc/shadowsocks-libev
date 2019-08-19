@@ -49,7 +49,7 @@ typedef struct query {
 
 typedef struct server {
     ev_io io;
-    int fd, sfd;
+    int fd;
 
     struct remote *remote;
     struct listen_ctx *listen_ctx;

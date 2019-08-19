@@ -134,7 +134,7 @@ resolv_cb(struct sockaddr *addr, void *data)
             return;
         }
 
-        s = send(remote->fd, query->buf->data, query->buf->len, 0);
+        s = send(remote->fd, query->buf->data + query->buf->idx, query->buf->len, 0);
         if (s == -1) {
             ERROR("[udp] sendto_remote");
             close_and_free_remote(EV_A_ remote);
@@ -280,13 +280,14 @@ static remote_t *
 create_remote(EV_P_ struct sockaddr_storage *addr, server_t *server)
 {
     listen_ctx_t *listen_ctx = server->listen_ctx;
-    struct cork_dllist_item *remote_itm = cork_dllist_head(&server->remotes);
-    remote_t *remote
-        = remote_itm ? cork_container_of(remote_itm, remote_t, entries) : NULL;
+    remote_t *remote = NULL;
+    struct cork_dllist_item *remote_itm
+        = cork_dllist_head(&server->remotes);
 
-    if (remote != NULL) {
+    if (remote_itm != NULL) {
         // remote is now active and
         // now we need to remove it from the "idlers' list"
+        remote = cork_container_of(remote_itm, remote_t, entries);
         cork_dllist_remove(&remote->entries);
         ev_timer_again(EV_A_ & remote->watcher);
     } else {
@@ -541,7 +542,9 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
 #ifdef MODULE_REMOTE
 // ssocks module ////////////
 
-    crypto_t *crypto = server->listen_ctx->crypto;
+    listen_ctx_t *listen_ctx = server->listen_ctx;
+
+    crypto_t *crypto = listen_ctx->crypto;
     int err = crypto->decrypt_all(buf, crypto->cipher, buf_size);
     if (err) {
         // drop the packet silently
@@ -556,7 +559,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
 
     tx += buf->len;
     buf->len -= offset;
-    memmove(buf->data, buf->data + offset, buf->len);
+    buf->idx += offset;
 
     if (verbose && buf->len > packet_size) {
         LOGI("[udp] server_recv_sendto fragmentation, "
@@ -564,7 +567,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
     }
 
     remote_t *remote =
-        create_remote(EV_A_ NULL/*listen_ctx->addr*/, server);
+        create_remote(EV_A_ listen_ctx->addr, server);
 
     if (remote == NULL)
         goto CLEAN_UP;
@@ -725,7 +728,7 @@ bailed: {
         goto CLEAN_UP;
     }
 
-    s = send(remote->fd, buf->data, buf->len, 0);
+    s = send(remote->fd, buf->data + buf->idx, buf->len, 0);
     if (s == -1) {
         ERROR("[udp] server_recv_sendto");
         close_and_free_remote(EV_A_ remote);
