@@ -140,7 +140,9 @@ typedef struct {
 
 static
 const jconf_t jconf_default = {
+#ifdef MODULE_LOCAL
     .local_addr   = "localhost",
+#endif
     .method       = "chacha20-ietf-poly1305",
 #ifdef MODULE_MANAGER
     .manager_addr = "127.0.0.1:8839",

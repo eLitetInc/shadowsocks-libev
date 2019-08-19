@@ -130,7 +130,6 @@ resolv_cb(struct sockaddr *addr, void *data)
 
         if (s == -1) {
             ERROR("connect");
-            close_and_free_remote(EV_A_ remote);
             return;
         }
 
@@ -480,7 +479,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
     buffer_t *buf    = new_buffer(buf_size);
 
     int sourcefd;
-    ssocks_addr_t *destaddr = &(ssocks_addr_t) {};
+    ssocks_addr_t *destaddr = ss_calloc(1, sizeof(*destaddr));
     struct sockaddr_storage *saddr = ss_calloc(1, sizeof(*saddr));
 
 #ifdef MODULE_REDIR
@@ -506,7 +505,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
         goto CLEAN_UP;
     }
 
-    destaddr->addr = &(struct sockaddr_storage) {};
+    destaddr->addr = ss_calloc(1, sizeof(*destaddr->addr));
     if (getdestaddr_dgram(&msg, destaddr->addr)) {
         LOGE("[udp] unable to determine destination address");
         goto CLEAN_UP;

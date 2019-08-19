@@ -262,16 +262,16 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
     switch (server->stage) {
         case STAGE_INIT: {
             ssocks_addr_t destaddr = { 0 };
-            int offset = parse_ssocks_header(server->buf, &destaddr, 0);
-            server->remote = remote;
+            int offset = parse_ssocks_header(remote->buf, &destaddr, 0);
 
-            if (offset < 0 || server->buf->len < offset) {
+            if (offset < 0 || remote->buf->len < offset) {
                 report_addr(EV_A_ server, "invalid request length");
                 return;
             }
 
-            server->buf->len -= offset;
-            server->buf->idx += offset;
+            server->remote = remote;
+            remote->buf->len -= offset;
+            remote->buf->idx += offset;
 
             ev_io_stop(EV_A_ & server_recv_ctx->io);
             if (destaddr.dname != NULL) {

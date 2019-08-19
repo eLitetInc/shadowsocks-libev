@@ -27,6 +27,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <time.h>
+#include <string.h>
 
 #define new(type)   ss_calloc(1, sizeof(type))
 #define elvis(a, b) (a) ? (a) : (b)
@@ -248,6 +249,16 @@ ss_calloc(size_t num, size_t size)
         exit(EXIT_FAILURE);
     return tmp;
 }
+
+inline void *
+memdup(const void* src, size_t len)
+{
+    void *new = ss_malloc(len);
+    return src ? memcpy(new, src, len) : NULL;
+}
+
+#define ss_new(T, ...)   \
+    (T *)memdup((T[]){ __VA_ARGS__ }, sizeof(T))
 
 #define null_terminate(arr, len)    \
     if ((arr)[len - 1] != 0) {              \

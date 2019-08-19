@@ -706,8 +706,8 @@ free_connections(struct ev_loop *loop)
     cork_dllist_foreach(&connections, curr, next,
                         server_t, server, entries) {
         if (server != NULL) {
-            close_and_free_server(loop, server);
             close_and_free_remote(loop, server->remote);
+            close_and_free_server(loop, server);
         }
     }
 }
@@ -834,14 +834,15 @@ start_relay(jconf_t *conf,
         LOGI("disabled remote domain resolution");
     }
 
-    listen_ctx_t listen_ctx = {
+    listen_ctx_t *listen_ctx = ss_new(
+        listen_ctx_t, {
         .mtu        = conf->mtu,
         .mptcp      = conf->mptcp,
         .reuse_port = conf->reuse_port,
         .remote_num = conf->remote_num,
         .remotes    = ss_calloc(conf->remote_num, sizeof(remote_cnf_t *)),
         .timeout    = atoi(conf->timeout),
-    };
+    });
 
 #ifdef MODULE_TUNNEL
     ss_addr_t *tunnel_addr = &conf->tunnel_addr;
@@ -850,7 +851,7 @@ start_relay(jconf_t *conf,
         FATAL("tunnel address either undefined or invalid");
     }
 
-    ssocks_addr_t *destaddr = &listen_ctx.destaddr;
+    ssocks_addr_t *destaddr = &listen_ctx->destaddr;
     destaddr->addr = ss_calloc(1, sizeof(struct sockaddr_storage));
     if (get_sockaddr(tunnel_addr->host, tunnel_addr->port,
                      destaddr->addr, !conf->remote_dns, conf->ipv6_first) == -1)
@@ -938,14 +939,14 @@ start_relay(jconf_t *conf,
         remote_cnf->addr   = storage;
         remote_cnf->crypto = crypto;
 
-        listen_ctx.remotes[i] = remote_cnf;
+        listen_ctx->remotes[i] = remote_cnf;
     }
 
     ss_dscp_t **dscp = conf->dscp;
     char *local_addr = conf->local_addr,
          *local_port = conf->local_port;
 
-    listen_ctx_t listen_ctx_current = listen_ctx;
+    listen_ctx_t *listen_ctx_current = memdup(listen_ctx, sizeof(*listen_ctx));
     do {
         struct sockaddr_storage *storage = &(struct sockaddr_storage) {};
         if (get_sockaddr(local_addr, local_port,
@@ -954,9 +955,9 @@ start_relay(jconf_t *conf,
             FATAL("failed to resolve %s", local_addr);
         }
 
-        if (listen_ctx_current.tos) {
+        if (listen_ctx_current->tos) {
             LOGI("listening on %s (TOS 0x%x)",
-                 sockaddr_readable("%a:%p", storage), listen_ctx_current.tos);
+                 sockaddr_readable("%a:%p", storage), listen_ctx_current->tos);
         } else {
             LOGI("listening on %s",
                  sockaddr_readable("%a:%p", storage));
@@ -967,24 +968,25 @@ start_relay(jconf_t *conf,
             // Setup socket
             socket =
 #ifdef HAVE_LAUNCHD
-                launch_or_create(storage, &listen_ctx_current);
+                launch_or_create(storage, listen_ctx_current);
 #else
-                bind_and_listen(storage, IPPROTO_TCP, &listen_ctx_current);
+                bind_and_listen(storage, IPPROTO_TCP, listen_ctx_current);
 #endif
             if (socket != -1) {
                 if (conf->fast_open)
                     set_fastopen_passive(socket);
-                ev_io_init(&listen_ctx_current.io, accept_cb, listen_ctx_current.fd, EV_READ);
-                ev_io_start(EV_A_ & listen_ctx_current.io);
+                ev_io_init(&listen_ctx_current->io, accept_cb, listen_ctx_current->fd, EV_READ);
+                ev_io_start(EV_A_ & listen_ctx_current->io);
             }
         }
 
         // Setup UDP
         if (conf->mode != TCP_ONLY) {
-            listen_ctx_t listen_ctx_dgram = listen_ctx_current;
-            int socket_u = bind_and_listen(storage, IPPROTO_UDP, &listen_ctx_dgram);
-            if ((listen_ctx_dgram.fd = socket_u) != -1) {
-                init_udprelay(EV_A_ & listen_ctx_dgram);
+            listen_ctx_t *listen_ctx_dgram =
+                memdup(listen_ctx_current, sizeof(*listen_ctx_current));
+            int socket_u = bind_and_listen(storage, IPPROTO_UDP, listen_ctx_dgram);
+            if ((listen_ctx_dgram->fd = socket_u) != -1) {
+                init_udprelay(EV_A_ listen_ctx_dgram);
             }
         }
 
@@ -998,27 +1000,29 @@ start_relay(jconf_t *conf,
 
         // Handle additional TOS/DSCP listening ports
         if (*dscp != NULL) {
-            listen_ctx_current      = listen_ctx;
-            local_port              = (*dscp)->port;
-            listen_ctx_current.tos  = (*dscp)->dscp << 2;
+            listen_ctx_current       = memdup(listen_ctx, sizeof(*listen_ctx));
+            local_port               = (*dscp)->port;
+            listen_ctx_current->tos  = (*dscp)->dscp << 2;
         }
     } while (*(dscp++) != NULL);
 
 #elif MODULE_REMOTE
-    resolv_init(EV_A_ conf->nameserver, conf->ipv6_first);
     if (conf->nameserver != NULL)
         LOGI("using nameserver: %s", conf->nameserver);
-    port_service_init();
+    resolv_init(EV_A_ conf->nameserver, conf->ipv6_first);
 
-    cork_dllist_init(&listeners);
-
-    struct sockaddr_storage *laddr
-        = ss_calloc(1, sizeof(*laddr));
-    if (get_sockaddr(conf->local_addr, conf->local_port,
-                     laddr, 1, conf->ipv6_first) == -1)
-    {
-        FATAL("failed to resolve %s", conf->local_addr);
+    struct sockaddr_storage *laddr = NULL;
+    if (conf->local_addr != NULL) {
+        laddr = ss_calloc(1, sizeof(*laddr));
+        if (get_sockaddr(conf->local_addr, conf->local_port,
+                         laddr, 1, conf->ipv6_first) == -1)
+        {
+            FATAL("failed to resolve %s", conf->local_addr);
+        }
     }
+
+    port_service_init();
+    cork_dllist_init(&listeners);
 
     for (int i = 0; i < conf->remote_num; i++) {
         ss_remote_t *r = conf->remotes[i];
@@ -1099,41 +1103,42 @@ start_relay(jconf_t *conf,
                 FATAL("failed to start the plugin");
         }
 
-        listen_ctx_t listen_ctx = {
+        listen_ctx_t *listen_ctx = ss_new(
+            listen_ctx_t, {
             .iface   = iface,
             .addr    = laddr,
             .crypto  = crypto,
             .timeout = atoi(conf->timeout),
             .loop    = loop
-        };
+        });
 
 #ifndef __MINGW32__
         manager_addr = conf->manager_addr;
         if (conf->manager_addr != NULL) {
-            ev_timer_init(&listen_ctx.stat_watcher, stat_update_cb,
+            ev_timer_init(&listen_ctx->stat_watcher, stat_update_cb,
                           UPDATE_INTERVAL, UPDATE_INTERVAL);
-            ev_timer_start(EV_DEFAULT, &listen_ctx.stat_watcher);
+            ev_timer_start(EV_DEFAULT, &listen_ctx->stat_watcher);
         }
 #endif
 
         int socket = -1, socket_u = -1;
         if (conf->mode != UDP_ONLY) {
-            int socket = bind_and_listen(storage, IPPROTO_TCP, &listen_ctx);
+            int socket = bind_and_listen(storage, IPPROTO_TCP, listen_ctx);
             if (socket != -1) {
                 if (conf->fast_open)
                     set_fastopen_passive(socket);
-                ev_io_init(&listen_ctx.io, accept_cb, listen_ctx.fd, EV_READ);
-                ev_io_start(EV_A_ & listen_ctx.io);
-                cork_dllist_add(&listeners, &listen_ctx.entries);
+                ev_io_init(&listen_ctx->io, accept_cb, listen_ctx->fd, EV_READ);
+                ev_io_start(EV_A_ & listen_ctx->io);
+                cork_dllist_add(&listeners, &listen_ctx->entries);
             }
         }
 
         // Setup UDP
         if (conf->mode != TCP_ONLY) {
-            listen_ctx_t listen_ctx_dgram = listen_ctx;
-            int socket_u = bind_and_listen(storage, IPPROTO_UDP, &listen_ctx_dgram);
-            if ((listen_ctx_dgram.fd = socket_u) != -1) {
-                init_udprelay(EV_A_ & listen_ctx_dgram);
+            listen_ctx_t *listen_ctx_dgram = memdup(listen_ctx, sizeof(*listen_ctx));
+            int socket_u = bind_and_listen(storage, IPPROTO_UDP, listen_ctx_dgram);
+            if ((listen_ctx_dgram->fd = socket_u) != -1) {
+                init_udprelay(EV_A_ listen_ctx_dgram);
             }
         }
 
@@ -1155,13 +1160,13 @@ start_relay(jconf_t *conf,
 
 #ifdef MODULE_LOCAL
     if (conf->mode != UDP_ONLY) {
-        ev_io_stop(EV_A_ & listen_ctx.io);
+        ev_io_stop(EV_A_ & listen_ctx->io);
         free_connections(loop);
     }
 
-    if (listen_ctx.remotes != NULL) {
-        for (int i = 0; i < listen_ctx.remote_num; i++) {
-            remote_cnf_t *remote_cnf = listen_ctx.remotes[i];
+    if (listen_ctx->remotes != NULL) {
+        for (int i = 0; i < listen_ctx->remote_num; i++) {
+            remote_cnf_t *remote_cnf = listen_ctx->remotes[i];
             if (remote_cnf != NULL) {
                 if (remote_cnf->iface)
                     ss_free(remote_cnf->iface);
@@ -1173,7 +1178,7 @@ start_relay(jconf_t *conf,
                 ss_free(remote_cnf);
             }
         }
-        ss_free(listen_ctx.remotes);
+        ss_free(listen_ctx->remotes);
     }
 
 #elif MODULE_REMOTE
