@@ -323,10 +323,8 @@ new_server(int fd, listen_ctx_t *listener)
     if (verbose)
         server_conn++;
 
-    server_t *server;
-    server = ss_malloc(sizeof(server_t));
-
-    memset(server, 0, sizeof(server_t));
+    server_t *server
+        = ss_calloc(1, sizeof(*server));
 
     server->recv_ctx = ss_malloc(sizeof(server_ctx_t));
     server->send_ctx = ss_malloc(sizeof(server_ctx_t));

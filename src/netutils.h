@@ -117,10 +117,13 @@
 #define MAX_UDP_SOCKET_NUM 256
 #endif
 
-#define DSCP_EF      0x2E
-#define DSCP_MIN     0x0
-#define DSCP_MAX     0x3F
-#define DSCP_DEFAULT 0x0
+enum {
+    DSCP_EF      = 0x2E,
+    DSCP_MIN     = 0x0,
+    DSCP_MAX     = 0x3F,
+    DSCP_DEFAULT = 0x0
+} DSCP_VALUES;
+
 #define DSCP_MIN_LEN 2
 #define DSCP_MAX_LEN 4
 #define DSCP_CS_LEN  3

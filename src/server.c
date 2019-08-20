@@ -207,7 +207,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
     server_ctx_t *server_recv_ctx = (server_ctx_t *)w;
     server_t *server = server_recv_ctx->server;
     crypto_t *crypto = server->crypto;
-    remote_t *remote = server->stage == STAGE_STREAM ?
+    remote_t *remote = server->remote ?
                             server->remote : new_remote(server);
 
     buffer_t *buf = remote->buf;

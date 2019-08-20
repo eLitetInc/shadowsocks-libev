@@ -383,8 +383,6 @@ process_client_callback(struct resolv_query *query)
 
     if (query->free_cb != NULL)
         query->free_cb(query->data);
-    else
-        ss_free(query->data);
 
     ss_free(query);
 }
