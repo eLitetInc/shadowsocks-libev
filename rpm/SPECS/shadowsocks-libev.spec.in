@@ -58,7 +58,7 @@ BuildRequires:   systemd
 %else
 %configure --enable-shared
 %endif
-make %{?_smp_mflags}
+make %{?_smp_mflags} CFLAGS=-O2
 
 
 %install
