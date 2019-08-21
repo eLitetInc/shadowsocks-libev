@@ -190,50 +190,28 @@ static int
 remote_socket(struct sockaddr_storage *addr, const char *iface)
 {
     socklen_t addrlen = 0;
-    struct sockaddr_storage *destaddr = addr;
-    if (destaddr == NULL) {
-        destaddr = ss_calloc(1, sizeof(struct sockaddr_storage));
-        // Try binding IPv6 first
+    if (addr == NULL) {
+        // Try binding IPv6 first.
         if (ipv6first) {
-            addrlen = sizeof(struct sockaddr_in);
-            *(struct sockaddr_in6 *)destaddr = (struct sockaddr_in6) {
-                .sin6_family = AF_INET6,
-                .sin6_addr   = in6addr_any
-            };
-        } else {
+            struct sockaddr_in6 *destaddr = ss_calloc(1, sizeof(*destaddr));
+            destaddr->sin6_family = AF_INET6;
+            destaddr->sin6_addr   = in6addr_any;
+            addr = (struct sockaddr_storage *)destaddr;
             addrlen = sizeof(struct sockaddr_in6);
-            *(struct sockaddr_in *)destaddr = (struct sockaddr_in) {
-                .sin_family  = AF_INET,
-                .sin_addr.s_addr = INADDR_ANY
-            };
+        } else {
+            struct sockaddr_in *destaddr = ss_calloc(1, sizeof(*destaddr));
+            destaddr->sin_family = AF_INET;
+            destaddr->sin_addr.s_addr = INADDR_ANY;
+            addr = (struct sockaddr_storage *)destaddr;
+            addrlen = sizeof(struct sockaddr_in);
         }
-    } else {
-        struct sockaddr_storage *storage = NULL;
-        switch (destaddr->ss_family) {
-            case AF_INET:
-                addrlen = sizeof(struct sockaddr_in);
-                storage = (struct sockaddr_storage *)&(struct sockaddr_in) {
-                    .sin_family = AF_INET,
-                    .sin_addr = ((struct sockaddr_in *)destaddr)->sin_addr
-                };
-                break;
-            case AF_INET6:
-                addrlen = sizeof(struct sockaddr_in6);
-                storage = (struct sockaddr_storage *)&(struct sockaddr_in6) {
-                    .sin6_family = AF_INET6,
-                    .sin6_addr = ((struct sockaddr_in6 *)destaddr)->sin6_addr
-                };
-                break;
-            default:
-                return -1;
-        }
-        destaddr = storage;
     }
 
-    int remotefd = socket(destaddr->ss_family, SOCK_DGRAM, 0);
+    int remotefd = socket(addr->ss_family, SOCK_DGRAM, 0);
 
     if (remotefd == -1) {
         ERROR("[udp] cannot create socket");
+        return -1;
     } else {
         int opt = 1;
         setnonblocking(remotefd);
@@ -247,7 +225,7 @@ remote_socket(struct sockaddr_storage *addr, const char *iface)
         // Set QoS flag
         int tos = 46;
         setsockopt(remotefd,
-                   destaddr->ss_family == AF_INET6 ? IPPROTO_IP : IPPROTO_IPV6,
+                   addr->ss_family == AF_INET6 ? IPPROTO_IP : IPPROTO_IPV6,
                    IP_TOS, &tos, sizeof(tos));
 #endif
 #ifdef SET_INTERFACE
@@ -257,8 +235,8 @@ remote_socket(struct sockaddr_storage *addr, const char *iface)
         }
 #endif
 
-        if (bind(remotefd, (struct sockaddr *)destaddr, addrlen) != 0) {
-            FATAL("[udp] cannot bind remote");
+        if (bind(remotefd, (struct sockaddr *)addr, addrlen) != 0) {
+            close(remotefd);
             return -1;
         }
 
@@ -293,7 +271,7 @@ create_remote(EV_P_ struct sockaddr_storage *addr, server_t *server)
         // bind to any port
         int remotefd = remote_socket(addr, listen_ctx->iface);
         if (remotefd < 0) {
-            ERROR("[udp] udprelay bind() error");
+            ERROR("[udp] remote_socket");
             return NULL;
         }
 
@@ -397,6 +375,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
 
     if (r == -1) {
         ERROR("[udp] remote_recv_recvfrom");
+        close_and_free_remote(EV_A_ remote);
         goto CLEAN_UP;
     }
 
