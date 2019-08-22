@@ -42,7 +42,7 @@
 struct cache_entry {
     void *key;         /**<The key */
     void *data;        /**<Payload */
-    ev_tstamp ts;    /**<Timestamp */
+    ev_tstamp ts;      /**<Timestamp */
     UT_hash_handle hh; /**<Hash Handle for uthash */
 };
 
@@ -59,6 +59,14 @@ struct cache {
     if (HASH_COUNT((cache)->entries) > 0)   \
         HASH_ITER(hh, (cache)->entries, (entry), (tmp))
 
+inline struct cache_entry *
+cache_popfront(struct cache *cache)
+{
+    struct cache_entry *element = cache->entries;
+    HASH_DEL(cache->entries, element);
+    return element;
+}
+
 struct cache *
 new_cache(const size_t capacity,
           void (*free_cb)(void *key, void *element));
@@ -66,6 +74,7 @@ int cache_create(struct cache **dst, const size_t capacity,
                  void (*free_cb)(void *key, void *element));
 int cache_delete(struct cache *cache, int keep_data);
 int cache_clear(struct cache *cache, ev_tstamp age);
+int cache_free(struct cache *cache, struct cache_entry *entries);
 int cache_lookup(struct cache *cache, void *key, size_t key_len, void *result);
 int cache_insert(struct cache *cache, void *key, size_t key_len, void *data);
 int cache_remove(struct cache *cache, void *key, size_t key_len);

@@ -125,11 +125,13 @@ resolv_cb(struct sockaddr *addr, void *data)
 
     if (addr == NULL) {
         LOGE("[udp] unable to resolve");
+        close_and_free_remote(EV_A_ remote);
     } else {
         int s = connect(remote->fd, addr, get_sockaddr_len(addr));
 
         if (s == -1) {
             ERROR("connect");
+            close_and_free_remote(EV_A_ remote);
             return;
         }
 
@@ -311,6 +313,19 @@ close_and_free_remote(EV_P_ remote_t *remote)
          */
         if (!ev_is_active(&remote->io))
             cork_dllist_remove(&remote->entries);
+        else {
+            // TODO fixme remove
+            LOGE("fd %d not removed", remote->fd);
+
+            remote_t *remote_ = NULL;
+            struct cork_dllist_item *curr, *next;
+            cork_dllist_foreach(&remote->server->remotes, curr, next,
+                                remote_t, remote_, entries) {
+                if (remote_->fd == remote->fd)
+                    LOGE("found: cache hit");
+            }
+
+        }
         ev_timer_stop(EV_A_ & remote->watcher);
         ev_io_stop(EV_A_ & remote->io);
 
@@ -394,6 +409,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
     int err = crypto->decrypt_all(buf, crypto->cipher, buf_size);
     if (err) {
         // drop the packet silently
+        close_and_free_remote(EV_A_ remote);
         goto CLEAN_UP;
     }
 
@@ -410,6 +426,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
     crypto_t *crypto = server->listen_ctx->crypto;
     int err = crypto->encrypt_all(buf, crypto->cipher, buf_size);
     if (err) {
+        close_and_free_remote(EV_A_ remote);
         // drop the packet silently
         goto CLEAN_UP;
     }
@@ -458,7 +475,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
     buffer_t *buf    = new_buffer(buf_size);
 
     int sourcefd;
-    ssocks_addr_t *destaddr = ss_calloc(1, sizeof(*destaddr));
+    ssocks_addr_t *destaddr = &(ssocks_addr_t){};
     struct sockaddr_storage *saddr = ss_calloc(1, sizeof(*saddr));
 
 #ifdef MODULE_REDIR
