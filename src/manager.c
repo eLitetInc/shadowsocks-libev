@@ -60,8 +60,8 @@
 #include "utils.h"
 #include "netutils.h"
 #include "manager.h"
+#include "relay.h"
 
-int verbose          = 0;
 char *executable     = "ss-server";
 char *working_dir    = NULL;
 int working_dir_size = 0;

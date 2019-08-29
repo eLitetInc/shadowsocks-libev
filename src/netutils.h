@@ -40,6 +40,14 @@
 
 #include "common.h"
 
+#ifndef EAGAIN
+#define EAGAIN EWOULDBLOCK
+#endif
+
+#ifndef EWOULDBLOCK
+#define EWOULDBLOCK EAGAIN
+#endif
+
 #ifndef SOL_TCP
 #define SOL_TCP IPPROTO_TCP
 #endif
@@ -251,15 +259,6 @@ int setinterface(int socket_fd, const char *interface_name);
 
 #ifndef __MINGW32__
 int setnonblocking(int fd);
-#endif
-
-int create_and_bind(struct sockaddr_storage *storage,
-                    int protocol, listen_ctx_t *listen_ctx);
-int bind_and_listen(struct sockaddr_storage *storage,
-                    int protocol, listen_ctx_t *listen_ctx);
-#ifdef HAVE_LAUNCHD
-int launch_or_create(struct sockaddr_storage *storage,
-                     int protocol, listen_ctx_t *listen_ctx);
 #endif
 
 ssize_t

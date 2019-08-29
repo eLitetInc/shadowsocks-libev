@@ -56,12 +56,7 @@
 #include "plugin.h"
 #include "winsock.h"
 #include "tcprelay.h"
-
-int verbose = 0;
-int acl = 0;
-int no_delay = 0;
-int fast_open = 0;
-int ipv6first = 0;
+#include "relay.h"
 
 uint64_t tx = 0, rx = 0;
 
@@ -71,7 +66,7 @@ report_addr(EV_P_ server_t *server, const char *info)
     server->stage = STAGE_STOP;
 
     if (verbose) {
-        struct sockaddr_storage addr = { 0 };
+        struct sockaddr_storage addr = {};
         if (getpeername(server->fd, (struct sockaddr *)&addr, &(socklen_t) { sizeof(addr) }) == 0) {
             LOGE("failed to handshake with %s: %s", sockaddr_readable("%a", &addr), info);
         }
@@ -185,15 +180,15 @@ resolv_cb(struct sockaddr *addr, void *data)
     }
 
     if (addr == NULL) {
-        close_and_free_server(EV_A_ server);
         close_and_free_remote(EV_A_ remote);
+        close_and_free_server(EV_A_ server);
     } else {
         int r = create_remote(EV_A_ remote,
                     (struct sockaddr_storage *)addr);
 
         if (r == -1) {
-            close_and_free_server(EV_A_ server);
             close_and_free_remote(EV_A_ remote);
+            close_and_free_server(EV_A_ server);
         } else {
             // listen to remote connected event
             ev_io_start(EV_A_ & remote->send_ctx->io);
@@ -207,8 +202,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
     server_ctx_t *server_recv_ctx = (server_ctx_t *)w;
     server_t *server = server_recv_ctx->server;
     crypto_t *crypto = server->crypto;
-    remote_t *remote = server->remote ?
-                            server->remote : new_remote(server);
+    remote_t *remote = elvis(server->remote, new_remote(server));
 
     buffer_t *buf = remote->buf;
     ssize_t r = recv(server->fd, buf->data, SOCKET_BUF_SIZE, 0);
@@ -261,7 +255,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
     // handshake and transmit data
     switch (server->stage) {
         case STAGE_INIT: {
-            ssocks_addr_t destaddr = { 0 };
+            ssocks_addr_t destaddr = {};
             int offset = parse_ssocks_header(remote->buf, &destaddr, 0);
 
             if (offset < 0 || remote->buf->len < offset) {
@@ -374,13 +368,12 @@ server_send_cb(EV_P_ ev_io *w, int revents)
             ev_io_stop(EV_A_ & server_send_ctx->io);
             if (remote != NULL) {
                 ev_io_start(EV_A_ & remote->recv_ctx->io);
-                return;
             } else {
                 LOGE("invalid remote");
                 close_and_free_remote(EV_A_ remote);
                 close_and_free_server(EV_A_ server);
-                return;
             }
+            return;
         }
     }
 }
@@ -406,8 +399,14 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
         if (verbose) {
             LOGI("remote_recv closing the connection");
         }
+
         close_and_free_remote(EV_A_ remote);
-        close_and_free_server(EV_A_ server);
+        if (!reuse_conn) {
+            close_and_free_server(EV_A_ server);
+        } else {
+            server->stage = STAGE_INIT;
+            ev_io_start(EV_A_ & server->recv_ctx->io);
+        }
         return;
     } else if (r == -1) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -516,10 +515,8 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
             }
         }
 #endif
-        struct sockaddr_storage addr;
-        socklen_t len = sizeof(struct sockaddr_storage);
-        memset(&addr, 0, len);
-        int r = getpeername(remote->fd, (struct sockaddr *)&addr, &len);
+        struct sockaddr_storage addr = {};
+        int r = getpeername(remote->fd, (struct sockaddr *)&addr, &(socklen_t) { sizeof(addr) });
         if (r == 0) {
             // connected, stop the request timeout timer
             ev_timer_stop(EV_A_ & server->recv_ctx->watcher);
@@ -600,14 +597,13 @@ accept_cb(EV_P_ ev_io *w, int revents)
 
     if (acl) {
         struct sockaddr_storage addr;
-        socklen_t len = sizeof(struct sockaddr_storage);
-        int r = getpeername(serverfd, (struct sockaddr *)&addr, &len);
+        int r = getpeername(serverfd, (struct sockaddr *)&addr, &(socklen_t) { sizeof(addr) });
         if (r == 0) {
             if (search_acl(ACL_ATYP_IP, &addr, ACL_UNSPCLIST))
             {
                 if (verbose)
                     LOGE("blocking all requests from %s",
-                        sockaddr_readable("%a", &addr));
+                         sockaddr_readable("%a", &addr));
                 return;
             }
         }

@@ -35,6 +35,7 @@
 #include "shadowsocks.h"
 #include "crypto.h"
 #include "jconf.h"
+#include "relay.h"
 
 #ifdef MODULE_REMOTE
 #include "resolv.h"
@@ -49,11 +50,6 @@ struct dscptracker {
     unsigned int packet_count;
 };
 #endif
-
-typedef struct query {
-    struct server *server;
-    char *hostname;
-} query_t;
 #endif
 
 typedef struct server_ctx {
@@ -123,6 +119,7 @@ typedef struct remote {
     struct remote_ctx *send_ctx;
     struct server *server;
     struct sockaddr_storage *addr;
+    remote_cnf_t *profile;
 } remote_t;
 
 enum {
@@ -154,12 +151,17 @@ int create_remote(EV_P_ remote_t *remote, struct sockaddr_storage *addr);
 #elif defined MODULE_LOCAL
 server_t *new_server(int fd);
 void remote_timeout_cb(EV_P_ ev_timer *watcher, int revents);
+int sendto_remote(remote_t *remote);
 int init_remote(EV_P_ remote_t *remote, remote_cnf_t *conf);
 int create_remote(EV_P_ remote_t *remote, buffer_t *buf,
                   ssocks_addr_t *destaddr, int acl_enabled);
+int remote_connected(remote_t *remote);
 #endif
 
 int start_relay(jconf_t *conf,
                 ss_callback_t callback, void *data);
+
+void init_udprelay(EV_P_ listen_ctx_t *listener);
+void free_udprelay(struct ev_loop *loop);
 
 #endif // _RELAY_H

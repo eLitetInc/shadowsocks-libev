@@ -35,6 +35,13 @@
 #define ntlforeach(type, var, list) \
                     for (type curr = (list); curr != NULL; curr++)
 
+#ifndef min
+#define min(a, b) (((a) < (b)) ? (a) : (b))
+#endif
+#ifndef max
+#define max(a, b) (((a) > (b)) ? (a) : (b))
+#endif
+
 #define PORTSTRLEN 16
 #define SS_ADDRSTRLEN (INET6_ADDRSTRLEN + PORTSTRLEN + 1)
 
@@ -297,6 +304,19 @@ currtime_readable()
     for (int i = 0; i < cork_array_size(src); i++) {    \
         cork_array_append(dst, cork_array_at(src, i));  \
     }
+
+#define cork_dllist_popfront(dst, T, entries) ({            \
+    struct cork_dllist_item *i = cork_dllist_head(dst);     \
+    if (i != NULL) {                                        \
+        T *element = cork_container_of(i, T, (entries));    \
+        cork_dllist_remove(&element->(entries));            \
+        element;                                            \
+    } else NULL;                                            \
+})
+
+#define cork_dllist_each(dst, element, T, entries)  \
+    struct cork_dllist_item *curr, *next;           \
+    cork_dllist_foreach((dst), curr, next, __typeof__(*(element)), (element), (entries))
 
 inline void
 cork_dllist_merge(struct cork_dllist *dst, struct cork_dllist *src)

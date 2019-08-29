@@ -48,12 +48,66 @@
 
 #include <libcork/core.h>
 
+#include <time.h>
+
+#ifdef HAVE_LIBEV_EV_H
+#include <libev/ev.h>
+#else
+#include <ev.h>
+#endif
+
+#include "crypto.h"
+#include "jconf.h"
+
+#ifdef MODULE_REMOTE
+#include "resolv.h"
+#endif
+
+#include "common.h"
 #include "utils.h"
 #include "netutils.h"
-#include "udprelay.h"
 #include "winsock.h"
 #include "acl.h"
+#include "hostname.h"
 #include "shadowsocks.h"
+#include "cache.h"
+#include "relay.h"
+
+#ifdef MODULE_REMOTE
+typedef struct query {
+    buffer_t *buf;
+    struct remote *remote;
+} query_t;
+#endif
+
+typedef struct server {
+    ev_io io;
+    int fd;
+
+    struct remote *remote;
+    struct listen_ctx *listen_ctx;
+
+    // socket pool/cache
+    struct cache *remotes;
+} server_t;
+
+typedef struct remote {
+    ev_io io;
+    ev_timer watcher;
+    int fd, sfd;
+    int direct;
+
+#ifdef MODULE_LOCAL
+    crypto_t *crypto;
+#ifdef MODULE_SOCKS
+    buffer_t *abuf;
+#endif
+#endif
+
+    struct server *server;
+    struct cork_dllist_item entries;
+    struct sockaddr *saddr;
+} remote_t;
 
 static void server_recv_cb(EV_P_ ev_io *w, int revents);
 static void remote_recv_cb(EV_P_ ev_io *w, int revents);
@@ -88,7 +142,7 @@ static int packet_size  = DGRAM_PKT_SIZE;
 static int buf_size     = DGRAM_BUF_SIZE;
 
 static int server_num   = 0;
-static server_t *servers[MAX_REMOTE_NUM] = { NULL };
+static server_t *servers[MAX_REMOTE_NUM] = {};
 
 #ifdef MODULE_REMOTE
 static void
@@ -191,25 +245,29 @@ create_tproxy(struct sockaddr_storage *destaddr)
 static int
 remote_socket(struct sockaddr_storage *addr, const char *iface)
 {
-    socklen_t addrlen = 0;
+    socklen_t addrlen = sizeof(*addr);
+    struct sockaddr_storage *destaddr =
+        elvis(addr, &(struct sockaddr_storage){});
     if (addr == NULL) {
-        // Try binding IPv6 first.
+        // try binding IPv6 first.
         if (ipv6first) {
-            struct sockaddr_in6 *destaddr = ss_calloc(1, sizeof(*destaddr));
-            destaddr->sin6_family = AF_INET6;
-            destaddr->sin6_addr   = in6addr_any;
-            addr = (struct sockaddr_storage *)destaddr;
+            destaddr = (struct sockaddr_storage *)
+            &(struct sockaddr_in6) {
+                .sin6_family = AF_INET6,
+                .sin6_addr   = in6addr_any
+            };
             addrlen = sizeof(struct sockaddr_in6);
         } else {
-            struct sockaddr_in *destaddr = ss_calloc(1, sizeof(*destaddr));
-            destaddr->sin_family = AF_INET;
-            destaddr->sin_addr.s_addr = INADDR_ANY;
-            addr = (struct sockaddr_storage *)destaddr;
+            destaddr = (struct sockaddr_storage *)
+            &(struct sockaddr_in) {
+                .sin_family = AF_INET,
+                .sin_addr.s_addr = INADDR_ANY
+            };
             addrlen = sizeof(struct sockaddr_in);
         }
     }
 
-    int remotefd = socket(addr->ss_family, SOCK_DGRAM, 0);
+    int remotefd = socket(destaddr->ss_family, SOCK_DGRAM, 0);
 
     if (remotefd == -1) {
         ERROR("[udp] cannot create socket");
@@ -227,7 +285,7 @@ remote_socket(struct sockaddr_storage *addr, const char *iface)
         // Set QoS flag
         int tos = 46;
         setsockopt(remotefd,
-                   addr->ss_family == AF_INET6 ? IPPROTO_IP : IPPROTO_IPV6,
+                   destaddr->ss_family == AF_INET6 ? IPPROTO_IP : IPPROTO_IPV6,
                    IP_TOS, &tos, sizeof(tos));
 #endif
 #ifdef SET_INTERFACE
@@ -237,7 +295,7 @@ remote_socket(struct sockaddr_storage *addr, const char *iface)
         }
 #endif
 
-        if (bind(remotefd, (struct sockaddr *)addr, addrlen) != 0) {
+        if (bind(remotefd, (struct sockaddr *)destaddr, addrlen) != 0) {
             close(remotefd);
             return -1;
         }
@@ -258,18 +316,15 @@ remote_socket(struct sockaddr_storage *addr, const char *iface)
 static remote_t *
 create_remote(EV_P_ struct sockaddr_storage *addr, server_t *server)
 {
-    listen_ctx_t *listen_ctx = server->listen_ctx;
-    remote_t *remote = NULL;
-    struct cork_dllist_item *remote_itm
-        = cork_dllist_head(&server->remotes);
+    remote_t *remote = cache_popfront(server->remotes, false);
 
-    if (remote_itm != NULL) {
+    if (remote != NULL) {
         // remote is now active and
         // now we need to remove it from the "idlers' list"
-        remote = cork_container_of(remote_itm, remote_t, entries);
-        cork_dllist_remove(&remote->entries);
         ev_timer_again(EV_A_ & remote->watcher);
     } else {
+        listen_ctx_t *listen_ctx = server->listen_ctx;
+
         // bind to any port
         int remotefd = remote_socket(addr, listen_ctx->iface);
         if (remotefd < 0) {
@@ -290,7 +345,7 @@ create_remote(EV_P_ struct sockaddr_storage *addr, server_t *server)
 static remote_t *
 new_remote(int fd, int timeout)
 {
-    remote_t *remote = ss_calloc(1, sizeof(remote_t));
+    remote_t *remote = ss_calloc(1, sizeof(*remote));
     remote->fd = fd;
 
     ev_io_init(&remote->io, remote_recv_cb, fd, EV_READ);
@@ -311,23 +366,15 @@ close_and_free_remote(EV_P_ remote_t *remote)
          *  that are currenly active do not count.
          *  They have ALREADY been (and are REQUIRED to be) removed from the list.
          */
-        if (!ev_is_active(&remote->io))
-            cork_dllist_remove(&remote->entries);
-        else {
-            // TODO fixme remove
-            LOGE("fd %d not removed", remote->fd);
+        server_t *server = remote->server;
 
-            remote_t *remote_ = NULL;
-            struct cork_dllist_item *curr, *next;
-            cork_dllist_foreach(&remote->server->remotes, curr, next,
-                                remote_t, remote_, entries) {
-                if (remote_->fd == remote->fd)
-                    LOGE("found: cache hit");
-            }
-
+        if (server != NULL) {
+            cache_remove(server->remotes,
+                &(int) { remote->fd }, sizeof(remote->fd));
         }
-        ev_timer_stop(EV_A_ & remote->watcher);
+
         ev_io_stop(EV_A_ & remote->io);
+        ev_timer_stop(EV_A_ & remote->watcher);
 
         close(remote->fd);
 #ifdef MODULE_SOCKS
@@ -349,7 +396,7 @@ new_server(int fd, listen_ctx_t *listener)
 
     if (server_num < MAX_REMOTE_NUM)
         servers[server_num++] = server;
-    cork_dllist_init(&server->remotes);
+    server->remotes = new_cache(-1, NULL);
 
     return server;
 }
@@ -361,12 +408,11 @@ close_and_free_server(EV_P_ server_t *server)
         ev_io_stop(EV_A_ & server->io);
         close(server->fd);
 
-        remote_t *remote = NULL;
-        struct cork_dllist_item *curr, *next;
-        cork_dllist_foreach(&server->remotes, curr, next,
-                            remote_t, remote, entries) {
-            close_and_free_remote(EV_A_ remote);
+        struct cache_entry *element;
+        cache_foreach(server->remotes, element) {
+            close_and_free_remote(EV_A_ (remote_t *)element->value);
         }
+        cache_delete(server->remotes, false);
 
         ss_free(server);
     }
@@ -446,7 +492,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
     // trigger the timer and add remote back to cache
     ev_timer_again(EV_A_ & remote->watcher);
     ev_io_stop(EV_A_ & remote->io);
-    cork_dllist_add(&server->remotes, &remote->entries);
+    cache_insert(server->remotes, &(int) { remote->fd }, sizeof(remote->fd), NULL);
 
 CLEAN_UP:
 #ifdef MODULE_REDIR
@@ -647,12 +693,12 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
 #endif
         );
 
-    if (remote_dns && destaddr->dname) {
+    if (remote_dns && !destaddr->dname) {
         switch (port_service(destaddr->port)) {
-            default:
             case PORT_HTTP_SERVICE:
             case PORT_HTTPS_SERVICE: {
-                LOGE("[udp] QUIC protocol not supported yet");
+                /*destaddr->dname_len =
+                    gquic_hostname(buf->data + buf->idx, buf->len, &destaddr->dname);*/
             } break;
         }
     }
@@ -667,7 +713,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                      search_acl(ACL_ATYP_SSOCKS, destaddr, ACL_UNSPCLIST) : 0;
 
     if (verbose) {
-        LOGI("%s %s", remote->direct ? "bypassing" : "connecting to",
+        LOGI("[udp] %s %s", remote->direct ? "bypassing" : "connecting to",
              destaddr->dname ? hostname_readable(destaddr->dname, destaddr->dname_len, destaddr->port)
                              : sockaddr_readable("%a:%p", destaddr->addr));
     }

@@ -55,17 +55,11 @@
 #include "plugin.h"
 #include "winsock.h"
 #include "tcprelay.h"
+#include "relay.h"
 
-int verbose = 0;
-int acl = 0;
-int ipv6first = 0;
-int fast_open = 0;
 #ifdef __ANDROID__
 int vpn = 0;
 #endif
-int remote_dns = 1; // resolve hostname remotely
-
-static int no_delay  = 0;
 
 void
 server_recv_cb(EV_P_ ev_io *w, int revents)
@@ -259,50 +253,8 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
     ev_timer_stop(EV_A_ & remote_send_ctx->watcher);
 
     if (!remote_send_ctx->connected) {
-#ifdef TCP_FASTOPEN_WINSOCK
-        if (fast_open) {
-            // Check if ConnectEx is done
-            if (!remote->connect_ex_done) {
-                DWORD numBytes;
-                DWORD flags;
-                // Non-blocking way to fetch ConnectEx result
-                if (WSAGetOverlappedResult(remote->fd, &remote->olap,
-                                           &numBytes, FALSE, &flags)) {
-                    remote->buf->len       -= numBytes;
-                    remote->buf->idx        = numBytes;
-                    remote->connect_ex_done = 1;
-                } else if (WSAGetLastError() == WSA_IO_INCOMPLETE) {
-                    // XXX: ConnectEx still not connected, wait for next time
-                    return;
-                } else {
-                    ERROR("WSAGetOverlappedResult");
-                    // not connected
-                    close_and_free_remote(EV_A_ remote);
-                    close_and_free_server(EV_A_ server);
-                    return;
-                }
-            }
-
-            // Make getpeername work
-            if (setsockopt(remote->fd, SOL_SOCKET,
-                           SO_UPDATE_CONNECT_CONTEXT, NULL, 0) != 0) {
-                ERROR("setsockopt");
-            }
-        }
-#endif
-        int r = 0;
-
-        if (remote->addr == NULL) {
-            struct sockaddr_storage addr;
-            socklen_t len = sizeof(struct sockaddr_storage);
-            r = getpeername(remote->fd, (struct sockaddr *)&addr, &len);
-        }
-
-        if (r == 0) {
+        if (remote_connected(remote)) {
             remote_send_ctx->connected = 1;
-
-            assert(remote->buf->len == 0);
-            create_ssocks_header(remote->buf, &server->listen_ctx->destaddr);
 
             int err = crypto->encrypt(remote->buf, remote->e_ctx, SOCKET_BUF_SIZE);
 
@@ -315,10 +267,12 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
 
             ev_io_start(EV_A_ & remote->recv_ctx->io);
         } else {
-            ERROR("getpeername");
-            // not connected
-            close_and_free_remote(EV_A_ remote);
-            close_and_free_server(EV_A_ server);
+            if (errno != CONNECT_IN_PROGRESS) {
+                ERROR("getpeername");
+                // not connected
+                close_and_free_remote(EV_A_ remote);
+                close_and_free_server(EV_A_ server);
+            }
             return;
         }
     }
@@ -330,38 +284,7 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
         return;
     } else {
         // has data to send
-        ssize_t s = -1;
-        if (fast_open && remote->addr != NULL) {
-            ssize_t s = sendto_idempotent(remote->fd,
-                                          remote->buf->data + remote->buf->idx,
-                                          remote->buf->len, (struct sockaddr *)remote->addr
-#ifdef TCP_FASTOPEN_WINSOCK
-                                          , &remote->olap, &remote->connect_ex_done
-#endif
-            );
-            remote->addr = NULL;
-
-            if (s == -1) {
-                if (errno == CONNECT_IN_PROGRESS) {
-                    ev_io_start(EV_A_ & remote_send_ctx->io);
-                    ev_timer_start(EV_A_ & remote_send_ctx->watcher);
-                } else {
-                    fast_open = 0;
-                    if (errno == EOPNOTSUPP || errno == EPROTONOSUPPORT ||
-                        errno == ENOPROTOOPT) {
-                        LOGE("fast open is not supported on this platform");
-                    } else {
-                        ERROR("fast_open_connect");
-                    }
-                    close_and_free_remote(EV_A_ remote);
-                    close_and_free_server(EV_A_ server);
-                }
-                return;
-            }
-        } else {
-            s = send(remote->fd, remote->buf->data + remote->buf->idx,
-                     remote->buf->len, 0);
-        }
+        ssize_t s = sendto_remote(remote);
 
         if (s == -1) {
             if (errno != EAGAIN && errno != EWOULDBLOCK) {
@@ -407,20 +330,12 @@ accept_cb(EV_P_ ev_io *w, int revents)
 
     server->remote     = remote;
     server->listen_ctx = listener;
-    if (create_remote(EV_A_ remote, NULL, &listener->destaddr, 0) == -1) {
-        ERROR("create_remote");
+
+    int r = create_remote(EV_A_ remote, NULL, &listener->destaddr, 0);
+    if (r == -1) {
         close_and_free_remote(EV_A_ remote);
         close_and_free_server(EV_A_ server);
     } else {
-        int r = connect(remote->fd, (struct sockaddr *)remote->addr, sizeof(*remote->addr));
-
-        if (r == -1 && errno != CONNECT_IN_PROGRESS) {
-            ERROR("connect");
-            close_and_free_remote(EV_A_ remote);
-            close_and_free_server(EV_A_ server);
-            return;
-        }
-
         // listen to remote connected event
         ev_io_start(EV_A_ & remote->send_ctx->io);
         ev_timer_start(EV_A_ & remote->send_ctx->watcher);

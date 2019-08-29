@@ -53,8 +53,7 @@
 #include "utils.h"
 #include "cache.h"
 #include "common.h"
-
-extern int verbose;
+#include "relay.h"
 
 int
 set_reuseport(int socket)
@@ -70,11 +69,7 @@ set_mptcp(int socket)
     const char *enabled_values = mptcp_enabled_values;
     while (((mptcp = *(enabled_values++)) > 0) &&
            setsockopt(socket, IPPROTO_TCP, mptcp, &opt, sizeof(opt)) != -1);
-    if (!mptcp) {
-        ERROR("failed to enable multipath TCP");
-        return -1;
-    }
-    return 0;
+    return mptcp ? 0 : -1;
 }
 
 int
@@ -203,121 +198,6 @@ setnonblocking(int fd)
 
 #endif
 
-int
-create_and_bind(struct sockaddr_storage *storage,
-                int protocol, listen_ctx_t *listen_ctx)
-{
-    int fd = socket(storage->ss_family,
-                    protocol == IPPROTO_TCP ?
-                        SOCK_STREAM : SOCK_DGRAM,
-                    protocol);
-    if (fd == -1) {
-        return fd;
-    }
-
-    int ipv6only = storage->ss_family == AF_INET6;
-    setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &ipv6only, sizeof(ipv6only));
-
-    int opt = 1;
-    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-#ifdef SO_NOSIGPIPE
-    setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &opt, sizeof(opt));
-#endif
-
-    if (listen_ctx != NULL) {
-        if (listen_ctx->reuse_port) {
-            int err = set_reuseport(fd);
-            if (err == 0) {
-                LOGI("tcp port reuse enabled");
-            }
-        }
-
-#ifdef MODULE_REMOTE
-        if (protocol == IPPROTO_TCP
-            && listen_ctx->mptcp) {
-            set_mptcp(fd);
-        }
-#elif MODULE_REDIR
-        if (protocol == IPPROTO_UDP) {
-            if (tproxy_socket(fd, storage->ss_family)) {
-                ERROR("tproxy_socket");
-                FATAL("failed to enable transparent proxy");
-            }
-        }
-#endif
-    }
-
-    int s = bind(fd, (struct sockaddr *)storage, get_sockaddr_len((struct sockaddr *)storage));
-    if (s == 0) {
-        return fd;
-    } else {
-        ERROR("bind");
-        FATAL("failed to bind address %s", sockaddr_readable("%a:%p", storage));
-        close(fd);
-    }
-    return -1;
-}
-
-int
-bind_and_listen(struct sockaddr_storage *storage,
-                int protocol, listen_ctx_t *listen_ctx)
-{
-    int listenfd = create_and_bind(storage, protocol, listen_ctx);
-
-    if (listenfd != -1) {
-        setnonblocking(listenfd);
-        listen_ctx->fd = listenfd;
-        if (protocol == IPPROTO_TCP
-            && listen(listenfd, SOMAXCONN) == -1)
-        {
-            ERROR("listen");
-            FATAL("failed to listen on address %s", sockaddr_readable("%a:%p", storage));
-            close(listenfd);
-            return -1;
-        }
-    }
-
-    return listenfd;
-}
-
-
-#ifdef HAVE_LAUNCHD
-int
-launch_or_create(struct sockaddr_storage *storage,
-                 int protocol, listen_ctx_t *listen_ctx)
-{
-    int *listenfd;
-    size_t cnt;
-    int error = launch_activate_socket("Listeners", &listenfd, &cnt);
-    if (error == 0) {
-        if (cnt == 1) {
-            if (*listenfd == -1) {
-                FATAL("[launchd] bind() error");
-            }
-            if (listen(*listenfd, SOMAXCONN) == -1) {
-                FATAL("[launchd] listen() error");
-            }
-            setnonblocking(*listenfd);
-            listen_ctx->fd = listenfd;
-            return listenfd;
-        } else {
-            FATAL("[launchd] please don't specify multi entry");
-        }
-    } else if (error == ESRCH || error == ENOENT) {
-        /**
-         * ESRCH:  The calling process is not managed by launchd(8).
-         * ENOENT: The socket name specified does not exist
-         *         in the caller's launchd.plist(5).
-         */
-        return bind_and_listen(storage, protocol, listen_ctx);
-    } else {
-        FATAL("[launchd] launch_activate_socket() error");
-    }
-    return -1;
-}
-
-#endif
-
 ssize_t
 sendto_idempotent(int fd, const void *buf, size_t len,
                   struct sockaddr *addr
@@ -326,6 +206,10 @@ sendto_idempotent(int fd, const void *buf, size_t len,
 #endif
 )
 {
+    if (addr == NULL) {
+        return send(fd, buf, len, 0);
+    }
+
     ssize_t s = -1;
 #ifdef TCP_FASTOPEN_WINSOCK
     DWORD err = 0;

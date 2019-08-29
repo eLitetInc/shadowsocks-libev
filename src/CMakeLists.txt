@@ -6,11 +6,6 @@ else ()
 endif ()
 
 
-set(SS_SNI_SOURCE
-        http.c
-        tls.c
-        )
-
 set(SS_ACL_SOURCE
         acl.c
         rule.c
@@ -34,17 +29,18 @@ set(SS_SHARED_SOURCES
         json.c
         cache.c
         netutils.c
+        udprelay.c
         tcprelay.c
+        relay.c
+        hostname.c
         )
 
 set(LIBSHADOWSOCKS_LIBEV_SOURCE
         ${SS_SHARED_SOURCES}
-        udprelay.c
         cache.c
         local.c
         ${SS_CRYPTO_SOURCE}
         ${SS_PLUGIN_SOURCE}
-        ${SS_SNI_SOURCE}
         ${SS_ACL_SOURCE}
         )
 
@@ -70,7 +66,6 @@ set(SS_SERVER_SOURCE
         server.c
         ${SS_CRYPTO_SOURCE}
         ${SS_PLUGIN_SOURCE}
-        ${SS_SNI_SOURCE}
         ${SS_ACL_SOURCE}
         )
 
@@ -180,9 +175,9 @@ add_library(shadowsocks-libev STATIC ${LIBSHADOWSOCKS_LIBEV_SOURCE})
 target_compile_definitions(ss-server PUBLIC -DMODULE_REMOTE)
 target_compile_definitions(ss-tunnel PUBLIC -DMODULE_TUNNEL)
 target_compile_definitions(ss-manager PUBLIC -DMODULE_MANAGER)
-target_compile_definitions(ss-local PUBLIC -DMODULE_LOCAL)
+target_compile_definitions(ss-local PUBLIC -DMODULE_SOCKS)
 target_compile_definitions(ss-redir PUBLIC -DMODULE_REDIR)
-target_compile_definitions(shadowsocks-libev PUBLIC -DMODULE_LOCAL -DLIB_ONLY)
+target_compile_definitions(shadowsocks-libev PUBLIC -DMODULE_SOCKS -DLIB_ONLY)
 
 target_link_libraries(ss-server cork ipset ${DEPS})
 target_link_libraries(ss-tunnel cork ${DEPS})
@@ -211,9 +206,9 @@ add_library(shadowsocks-libev-shared SHARED ${LIBSHADOWSOCKS_LIBEV_SOURCE})
 target_compile_definitions(ss-server-shared PUBLIC -DMODULE_REMOTE)
 target_compile_definitions(ss-tunnel-shared PUBLIC -DMODULE_TUNNEL)
 target_compile_definitions(ss-manager-shared PUBLIC -DMODULE_MANAGER)
-target_compile_definitions(ss-local-shared PUBLIC -DMODULE_LOCAL)
+target_compile_definitions(ss-local-shared PUBLIC -DMODULE_SOCKS)
 target_compile_definitions(ss-redir-shared PUBLIC -DMODULE_REDIR)
-target_compile_definitions(shadowsocks-libev-shared PUBLIC -DMODULE_LOCAL)
+target_compile_definitions(shadowsocks-libev-shared PUBLIC -DMODULE_SOCKS)
 
 target_link_libraries(ss-server-shared ${DEPS_SHARED})
 target_link_libraries(ss-tunnel-shared ${DEPS_SHARED})
@@ -234,7 +229,7 @@ set_target_properties(ss-server-shared ss-tunnel-shared ss-manager-shared ss-loc
         )
 
 set_target_properties(shadowsocks-libev-shared PROPERTIES OUTPUT_NAME shadowsocks-libev)
-target_compile_definitions(shadowsocks-libev-shared PUBLIC -DMODULE_LOCAL)
+target_compile_definitions(shadowsocks-libev-shared PUBLIC -DMODULE_SOCKS)
 target_link_libraries(shadowsocks-libev-shared ${DEPS_SHARED})
 
 # ------------------------------------------------------------------

@@ -41,7 +41,7 @@
  */
 struct cache_entry {
     void *key;         /**<The key */
-    void *data;        /**<Payload */
+    void *value;       /**<Payload */
     ev_tstamp ts;      /**<Timestamp */
     UT_hash_handle hh; /**<Hash Handle for uthash */
 };
@@ -52,32 +52,36 @@ struct cache_entry {
 struct cache {
     size_t max_entries;              /**<Amount of entries this cache object can hold */
     struct cache_entry *entries;     /**<Head pointer for uthash */
-    void (*free_cb)(void *key, void *element);  /**<Callback function to free cache entries */
+    void (*free_cb)(void *key, void *value);  /**<Callback function to free cache entries */
 };
 
-#define cache_foreach(cache, entry, tmp)    \
-    if (HASH_COUNT((cache)->entries) > 0)   \
-        HASH_ITER(hh, (cache)->entries, (entry), (tmp))
+#define cache_foreach(cache, entry)    \
+    struct cache_entry *tmp;           \
+    HASH_ITER(hh, (cache)->entries, (entry), (tmp))
 
-inline struct cache_entry *
-cache_popfront(struct cache *cache)
+inline void *
+cache_popfront(struct cache *cache, bool keyval)
 {
+    if (cache == NULL)
+        return NULL;
+
     struct cache_entry *element = cache->entries;
-    HASH_DEL(cache->entries, element);
-    return element;
+    if (element != NULL) {
+        HASH_DEL(cache->entries, element);
+        return keyval ? element->key : element->value;
+    }
+    return NULL;
 }
 
-struct cache *
-new_cache(const size_t capacity,
-          void (*free_cb)(void *key, void *element));
-int cache_create(struct cache **dst, const size_t capacity,
-                 void (*free_cb)(void *key, void *element));
-int cache_delete(struct cache *cache, int keep_data);
-int cache_clear(struct cache *cache, ev_tstamp age);
-int cache_free(struct cache *cache, struct cache_entry *entries);
-int cache_lookup(struct cache *cache, void *key, size_t key_len, void *result);
-int cache_insert(struct cache *cache, void *key, size_t key_len, void *data);
-int cache_remove(struct cache *cache, void *key, size_t key_len);
-int cache_key_exist(struct cache *cache, void *key, size_t key_len);
+typedef void (*cache_free_cb)(void *key, void *value);
+struct cache *new_cache(const size_t, cache_free_cb);
+int cache_create(struct cache **, const size_t, cache_free_cb);
+int cache_delete(struct cache *, int);
+int cache_clear(struct cache *, ev_tstamp);
+int cache_free(struct cache *, struct cache_entry *);
+int cache_lookup(struct cache *, void *, size_t, void *);
+int cache_insert(struct cache *, void *, size_t, void *);
+int cache_remove(struct cache *, void *, size_t);
+int cache_key_exist(struct cache *, void *, size_t);
 
 #endif

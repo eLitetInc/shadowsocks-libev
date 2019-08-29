@@ -35,6 +35,7 @@
 #include "utils.h"
 #include "plugin.h"
 #include "winsock.h"
+#include "relay.h"
 
 #define CMD_RESRV_LEN 128
 
@@ -140,10 +141,8 @@ start_ss_plugin(plugin_t *plugin,
 
     exec = cork_exec_new(plugin_name);
     cork_exec_add_param(exec, plugin_name);  // argv[0]
-    extern int fast_open;
     if (fast_open) cork_exec_add_param(exec, "--fast-open");
 #ifdef __ANDROID__
-    extern int vpn;
     if (vpn) cork_exec_add_param(exec, "-V");
 #endif
 

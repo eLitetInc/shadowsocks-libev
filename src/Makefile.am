@@ -24,9 +24,6 @@ if !BUILD_WINCOMPAT
 bin_PROGRAMS += ss-manager
 endif
 
-sni_src = http.c \
-          tls.c
-
 acl_src = rule.c \
           acl.c
 
@@ -43,8 +40,10 @@ common_src = utils.c \
              json.c \
              udprelay.c \
              tcprelay.c \
+             relay.c \
              cache.c \
-             netutils.c
+             netutils.c \
+             hostname.c
 
 if BUILD_WINCOMPAT
 common_src += winsock.c
@@ -54,7 +53,6 @@ ss_local_SOURCES = local.c \
                    $(common_src) \
                    $(crypto_src) \
                    $(plugin_src) \
-                   $(sni_src) \
                    $(acl_src)
 
 ss_tunnel_SOURCES = tunnel.c \
@@ -68,10 +66,10 @@ ss_server_SOURCES = resolv.c \
                     $(common_src) \
                     $(crypto_src) \
                     $(plugin_src) \
-                    $(sni_src) \
                     $(acl_src)
 
 ss_manager_SOURCES = manager.c \
+                     relay.c \
                      utils.c \
                      jconf.c \
                      json.c \
@@ -87,7 +85,7 @@ ss_tunnel_LDADD += -lcares
 ss_server_LDADD += -lcares
 ss_manager_LDADD += -lcares
 
-ss_local_CFLAGS = $(AM_CFLAGS) -DMODULE_LOCAL
+ss_local_CFLAGS = $(AM_CFLAGS) -DMODULE_SOCKS
 ss_tunnel_CFLAGS = $(AM_CFLAGS) -DMODULE_TUNNEL
 ss_server_CFLAGS = $(AM_CFLAGS) -DMODULE_REMOTE
 ss_manager_CFLAGS = $(AM_CFLAGS) -DMODULE_MANAGER
@@ -102,7 +100,9 @@ ss_redir_SOURCES = utils.c \
                    cache.c \
                    udprelay.c \
                    tcprelay.c \
+                   relay.c \
                    redir.c \
+                   hostname.c \
                    $(crypto_src) \
                    $(plugin_src) \
                    $(sni_src) \
@@ -120,7 +120,7 @@ libshadowsocks_libev_la_LDFLAGS = -version-info $(VERSION_INFO)
 libshadowsocks_libev_la_LIBADD = $(ss_local_LDADD)
 include_HEADERS = shadowsocks.h
 
-noinst_HEADERS = acl.h crypto.h stream.h aead.h json.h netutils.h tls.h uthash.h \
-                 cache.h http.h plugin.h resolv.h utils.h base64.h ppbloom.h \
-                 common.h jconf.h manager.h protocol.h rule.h socks5.h udprelay.h tcprelay.h winsock.h
+noinst_HEADERS = acl.h crypto.h stream.h aead.h json.h netutils.h uthash.h \
+                 cache.h hostname.h plugin.h resolv.h utils.h base64.h ppbloom.h relay.h \
+                 common.h jconf.h manager.h rule.h socks5.h tcprelay.h winsock.h
 EXTRA_DIST = ss-nat

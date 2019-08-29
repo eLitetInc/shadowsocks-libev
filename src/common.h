@@ -36,71 +36,17 @@
 
 #include "crypto.h"
 #include "jconf.h"
-#include "protocol.h"
 #include "shadowsocks.h"
 
-
-#ifndef EAGAIN
-#define EAGAIN EWOULDBLOCK
-#endif
-
-#ifndef EWOULDBLOCK
-#define EWOULDBLOCK EAGAIN
-#endif
-
-#ifdef MODULE_REMOTE
-#ifdef MODULE_
-#error "MODULE_REMOTE and MODULE_LOCAL should not be both defined"
-#endif
-#endif
-
-#ifdef MODULE_LOCAL
-#define MODULE_SOCKS
-#endif
-
-#if defined(MODULE_TUNNEL) || defined(MODULE_REDIR)
+#if defined MODULE_SOCKS  || \
+    defined MODULE_TUNNEL || \
+    defined MODULE_REDIR
 #define MODULE_LOCAL
 #endif
 
-typedef struct remote_cnf {
-    char *iface;
-    crypto_t *crypto;
-    struct sockaddr_storage *addr;
-} remote_cnf_t;
-
-typedef struct listen_ctx {
-    ev_io io;
-    int fd;
-    int timeout;
-    int tos;
-    int mptcp;
-    int reuse_port;
-    int mtu;
-    char *iface;
-
-#ifdef MODULE_LOCAL
-    int remote_num;
-    struct remote_cnf **remotes;
-#ifdef MODULE_TUNNEL
-    struct ssocks_addr destaddr;
+#if defined MODULE_LOCAL && \
+    defined MODULE_REMOTE
+#error "MODULE_LOCAL and MODULE_REMOTE should not be both defined"
 #endif
-#elif MODULE_REMOTE
-    crypto_t *crypto;
-#ifndef __MINGW32__
-    ev_timer stat_watcher;
-#endif
-    struct cork_dllist_item entries;
-    struct ev_loop *loop;
-#endif
-    struct sockaddr_storage *addr;
-} listen_ctx_t;
-
-#ifdef __ANDROID__
-int protect_socket(int fd);
-int send_traffic_stat(uint64_t tx, uint64_t rx);
-#endif
-
-void init_udprelay(EV_P_ listen_ctx_t *listener);
-void free_udprelay(struct ev_loop *loop);
 
 #endif // _COMMON_H

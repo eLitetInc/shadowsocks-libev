@@ -55,6 +55,10 @@ typedef struct ssocks_hdr {
     uint16_t port;
 } PACKED ssocks_hdr_t;
 
+#define MAX_HOSTNAME_LEN 256
+static const int SSOCKS_HDR_SIZE =
+    sizeof(ssocks_hdr_t) + MAX_HOSTNAME_LEN - 1;
+
 typedef struct ssocks_addr {
     char  *dname;
     size_t dname_len;

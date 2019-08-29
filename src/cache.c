@@ -31,13 +31,14 @@
 
 #include <errno.h>
 #include <stdlib.h>
+#include <stdbool.h>
 
 #include "cache.h"
 #include "utils.h"
 
 struct cache *
 new_cache(const size_t capacity,
-          void (*free_cb)(void *key, void *element))
+          cache_free_cb free_cb)
 {
     struct cache *ret = NULL;
     cache_create(&ret, capacity, free_cb);
@@ -56,7 +57,7 @@ new_cache(const size_t capacity,
  */
 int
 cache_create(struct cache **dst, const size_t capacity,
-             void (*free_cb)(void *key, void *element))
+             cache_free_cb free_cb)
 {
     struct cache *new = NULL;
 
@@ -153,11 +154,9 @@ cache_free(struct cache *cache, struct cache_entry *entries)
     if (!cache || !entries)
         return EINVAL;
 
-    if (entries->data != NULL) {
+    if (entries->value != NULL) {
         if (cache->free_cb) {
-            cache->free_cb(entries->key, entries->data);
-        } else {
-            ss_free(entries->data);
+            cache->free_cb(entries->key, entries->value);
         }
     }
     ss_free(entries->key);
@@ -218,11 +217,11 @@ cache_remove(struct cache *cache, void *key, size_t key_len)
  *  @return EINVAL if cache is NULL or the key doesn't exist, 0 otherwise
  */
 int
-cache_lookup(struct cache *cache, void *key, size_t key_len, void *result)
+cache_lookup(struct cache *cache, void *key, size_t key_len, void *value)
 {
     struct cache_entry *tmp = NULL;
 
-    if (!cache || !key || !result) {
+    if (!cache || !key || !value) {
         return EINVAL;
     }
 
@@ -231,7 +230,7 @@ cache_lookup(struct cache *cache, void *key, size_t key_len, void *result)
         HASH_DELETE(hh, cache->entries, tmp);
         tmp->ts = ev_time();
         HASH_ADD_KEYPTR(hh, cache->entries, tmp->key, key_len, tmp);
-        *(void **)result = tmp->data;    // okay no memcpy here sweetie
+        *(void **)value = tmp->value;    // okay no memcpy here sweetie
         return 0;
     }
 
@@ -277,7 +276,7 @@ cache_key_exist(struct cache *cache, void *key, size_t key_len)
  *  @return EINVAL if cache is NULL, ENOMEM if malloc fails, 0 otherwise
  */
 int
-cache_insert(struct cache *cache, void *key, size_t key_len, void *data)
+cache_insert(struct cache *cache, void *key, size_t key_len, void *value)
 {
     struct cache_entry *entry     = NULL;
     struct cache_entry *tmp_entry = NULL;
@@ -293,8 +292,8 @@ cache_insert(struct cache *cache, void *key, size_t key_len, void *data)
     entry->key = ss_malloc(key_len);
     memcpy(entry->key, key, key_len);
 
-    entry->data = data;
-    entry->ts   = ev_time();
+    entry->ts = ev_time();
+    entry->value = value;
     HASH_ADD_KEYPTR(hh, cache->entries, entry->key, key_len, entry);
 
     if (cache->max_entries > 0

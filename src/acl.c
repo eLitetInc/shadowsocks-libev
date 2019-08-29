@@ -232,15 +232,13 @@ merge_ctrlists(struct cache *dst, struct cache *src)
     if (!(dst && src))
         return -1;
 
-    struct cache_entry *entry, *tmp;
-    cache_foreach(src, entry, tmp) {
-        ctrlist_t *dstlist = NULL, *srclist = entry->data;
+    struct cache_entry *entry;
+    cache_foreach(src, entry) {
+        ctrlist_t *dstlist = NULL, *srclist = entry->value;
         size_t ltaglen = strlen(srclist->label.ltag);
         if (cache_lookup(dst, srclist->label.ltag, ltaglen + 1, &dstlist) == 0) {
             // TODO merge OR replace?
-            if (!srclist->list)
-                continue;
-            if (dstlist->list)
+            if (srclist->list && dstlist->list)
                 cork_array_merge(dstlist->list, srclist->list);
             if (!srclist->label.tags)
                 continue;
@@ -464,9 +462,9 @@ parse_acl(acl_t *acl, aclconf_t *aclconf)
     acl->mode = aclconf->mode;
 
     int j = 0;
-    struct cache_entry *entry, *tmp;
-    cache_foreach(aclconf->lists, entry, tmp) {
-        ctrlist_t *list = entry->data;
+    struct cache_entry *entry;
+    cache_foreach(aclconf->lists, entry) {
+        ctrlist_t *list = entry->value;
         addrlist *rlist = &acl->blacklist;
         char *ltag = list->label.ltag;
 

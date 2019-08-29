@@ -54,6 +54,7 @@
 #include "resolv.h"
 #include "utils.h"
 #include "netutils.h"
+#include "relay.h"
 
 #ifdef __MINGW32__
 #define CONV_STATE_CB (ares_sock_state_cb)
@@ -92,8 +93,6 @@ struct resolv_query {
 
     int is_closed;
 };
-
-extern int verbose;
 
 static struct resolv_ctx default_ctx;
 static struct ev_loop *default_loop;
