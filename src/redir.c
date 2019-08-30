@@ -65,6 +65,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
 
     if (r == 0) {
         // connection closed
+        server->stage = STAGE_ERROR;
         close_and_free_remote(EV_A_ remote);
         close_and_free_server(EV_A_ server);
         return;
@@ -75,6 +76,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             return;
         } else {
             ERROR("server recv");
+            server->stage = STAGE_ERROR;
             close_and_free_remote(EV_A_ remote);
             close_and_free_server(EV_A_ server);
             return;
@@ -95,6 +97,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                     LOGE("partial HTTP/s request detected");
                 server->stage = STAGE_SNI;
             }
+            server->stage = STAGE_ERROR;
             close_and_free_remote(EV_A_ remote);
             close_and_free_server(EV_A_ server);
         } else {
@@ -129,6 +132,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             return;
         } else {
             ERROR("send");
+            server->stage = STAGE_ERROR;
             close_and_free_remote(EV_A_ remote);
             close_and_free_server(EV_A_ server);
             return;
@@ -193,11 +197,6 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
 
     if (r == 0) {
         // connection closed
-        if (reuse_conn &&
-            cache_insert(remote->profile->sockets,
-                         &(int) { remote->fd }, sizeof(int), NULL) == 0) {
-            remote->fd = -1;
-        }
         close_and_free_remote(EV_A_ remote);
         close_and_free_server(EV_A_ server);
         return;
@@ -208,6 +207,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
             return;
         } else {
             ERROR("remote recv");
+            server->stage = STAGE_ERROR;
             close_and_free_remote(EV_A_ remote);
             close_and_free_server(EV_A_ server);
             return;
@@ -289,6 +289,7 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
             if (errno != CONNECT_IN_PROGRESS) {
                 ERROR("getpeername");
                 // not connected
+                server->stage = STAGE_ERROR;
                 close_and_free_remote(EV_A_ remote);
                 close_and_free_server(EV_A_ server);
             }
@@ -309,6 +310,7 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
             if (errno != EAGAIN && errno != EWOULDBLOCK) {
                 ERROR("send");
                 // close and free
+                server->stage = STAGE_ERROR;
                 close_and_free_remote(EV_A_ remote);
                 close_and_free_server(EV_A_ server);
             }
@@ -406,10 +408,5 @@ main(int argc, char **argv)
     }
 #endif
 
-    no_delay   = conf.no_delay;
-    fast_open  = conf.fast_open;
-    verbose    = conf.verbose;
-    ipv6first  = conf.ipv6_first;
-    remote_dns = conf.remote_dns;
     return start_relay(&conf, NULL, NULL);
 }

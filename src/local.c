@@ -85,19 +85,19 @@ server_handshake_reply(EV_P_ ev_io *w, int udp_assc, struct socks5_response *res
     if (server->stage != STAGE_HANDSHAKE)
         return 0;
 
-    struct sockaddr_in sock_addr;
+    struct sockaddr_in sock_addr = {};
     if (udp_assc) {
-        socklen_t addr_len = sizeof(sock_addr);
-        if (getsockname(server->fd, (struct sockaddr *)&sock_addr, &addr_len) < 0) {
-            LOGE("getsockname: %s", strerror(errno));
+        if (getsockname(server->fd, (struct sockaddr *)&sock_addr, &(socklen_t) { sizeof(sock_addr) }) < 0) {
+            ERROR("getsockname");
             response->rep = SOCKS5_REP_CONN_REFUSED;
-            send(server->fd, (char *)response, sizeof(struct socks5_response), 0);
+            send(server->fd, response, sizeof(*response), 0);
+
+            server->stage = STAGE_ERROR;
             close_and_free_remote(EV_A_ remote);
             close_and_free_server(EV_A_ server);
             return -1;
         }
-    } else
-        memset(&sock_addr, 0, sizeof(sock_addr));
+    }
 
     buffer_t resp_to_send;
     buffer_t *resp_buf = &resp_to_send;
@@ -119,6 +119,7 @@ server_handshake_reply(EV_P_ ev_io *w, int udp_assc, struct socks5_response *res
 
     if (s < reply_size) {
         LOGE("failed to send fake reply");
+        server->stage = STAGE_ERROR;
         close_and_free_remote(EV_A_ remote);
         close_and_free_server(EV_A_ server);
         return -1;
@@ -158,8 +159,9 @@ server_handshake(EV_P_ ev_io *w, buffer_t *buf)
     } else if (request->cmd != SOCKS5_CMD_CONNECT) {
         LOGE("unsupported cmd: %d", request->cmd);
         response.rep = SOCKS5_REP_CMD_NOT_SUPPORTED;
-        char *send_buf = (char *)&response;
-        send(server->fd, send_buf, 4, 0);
+        send(server->fd, &response, sizeof(response), 0);
+
+        server->stage = STAGE_ERROR;
         close_and_free_remote(EV_A_ remote);
         close_and_free_server(EV_A_ server);
         return -1;
@@ -170,7 +172,9 @@ server_handshake(EV_P_ ev_io *w, buffer_t *buf)
     if (offset < 0) {
         LOGE("unsupported addrtype: %d", request->atyp);
         response.rep = SOCKS5_REP_ADDRTYPE_NOT_SUPPORTED;
-        send(server->fd, &response, 4, 0);
+        send(server->fd, &response, sizeof(response), 0);
+
+        server->stage = STAGE_ERROR;
         close_and_free_remote(EV_A_ remote);
         close_and_free_server(EV_A_ server);
         return -1;
@@ -196,6 +200,7 @@ server_handshake(EV_P_ ev_io *w, buffer_t *buf)
                 ev_io_start(EV_A_ & server_recv_ctx->io);
             }
         } else {
+            server->stage = STAGE_ERROR;
             close_and_free_remote(EV_A_ remote);
             close_and_free_server(EV_A_ server);
         }
@@ -249,6 +254,26 @@ server_stream(EV_P_ ev_io *w, buffer_t *buf)
     if (!remote->send_ctx->connected) {
         remote->buf->idx = 0;
 
+        if (fast_open) {
+            ssize_t s = sendto_remote(remote);
+            if (s == -1) {
+                if (errno == CONNECT_IN_PROGRESS) {
+                    // in progress, wait until connected
+                    remote->buf->idx = 0;
+                    ev_io_stop(EV_A_ & server_recv_ctx->io);
+                    ev_io_start(EV_A_ & remote->send_ctx->io);
+                    return;
+                } else {
+                    ERROR("send");
+                    // close and free
+                    server->stage = STAGE_ERROR;
+                    close_and_free_remote(EV_A_ remote);
+                    close_and_free_server(EV_A_ server);
+                    return;
+                }
+            }
+        }
+
         // wait on remote connected event
         ev_io_stop(EV_A_ & server_recv_ctx->io);
         ev_io_start(EV_A_ & remote->send_ctx->io);
@@ -266,6 +291,7 @@ server_stream(EV_P_ ev_io *w, buffer_t *buf)
                 return;
             } else {
                 ERROR("server_recv_cb_send");
+                server->stage = STAGE_ERROR;
                 close_and_free_remote(EV_A_ remote);
                 close_and_free_server(EV_A_ server);
                 return;
@@ -327,8 +353,10 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                 if (buf->len < sizeof(struct method_select_request)) {
                     return;
                 }
-                struct method_select_request *method = (struct method_select_request *)buf->data;
-                int method_len                       = method->nmethods + sizeof(struct method_select_request);
+                struct method_select_request *method =
+                    (struct method_select_request *)buf->data;
+                size_t method_len = method->nmethods + sizeof(*method);
+
                 if (buf->len < method_len) {
                     return;
                 }
@@ -343,8 +371,8 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                         response.method = METHOD_NOAUTH;
                         break;
                     }
-                char *send_buf = (char *)&response;
-                send(server->fd, send_buf, sizeof(response), 0);
+
+                send(server->fd, &response, sizeof(response), 0);
                 if (response.method == METHOD_UNACCEPTABLE) {
                     close_and_free_remote(EV_A_ remote);
                     close_and_free_server(EV_A_ server);
@@ -353,7 +381,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
 
                 server->stage = STAGE_HANDSHAKE;
 
-                if (method_len < (int)(buf->len)) {
+                if (method_len < buf->len) {
                     memmove(buf->data, buf->data + method_len, buf->len - method_len);
                     buf->len -= method_len;
                     continue;
@@ -436,6 +464,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
 
     if (r == 0) {
         // connection closed
+        server->stage = STAGE_ERROR;
         close_and_free_remote(EV_A_ remote);
         close_and_free_server(EV_A_ server);
         return;
@@ -446,6 +475,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
             return;
         } else {
             ERROR("remote_recv_cb_recv");
+            server->stage = STAGE_ERROR;
             close_and_free_remote(EV_A_ remote);
             close_and_free_server(EV_A_ server);
             return;
@@ -510,6 +540,7 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
     if (!remote_send_ctx->connected) {
         if (remote_connected(remote)) {
             remote_send_ctx->connected = 1;
+
             ev_timer_stop(EV_A_ & remote_send_ctx->watcher);
             ev_io_start(EV_A_ & remote->recv_ctx->io);
 
@@ -523,6 +554,7 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
             if (errno != CONNECT_IN_PROGRESS) {
                 ERROR("getpeername");
                 // not connected
+                server->stage = STAGE_ERROR;
                 close_and_free_remote(EV_A_ remote);
                 close_and_free_server(EV_A_ server);
             }
@@ -543,6 +575,7 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
             if (errno != EAGAIN && errno != EWOULDBLOCK) {
                 ERROR("remote_send_cb_send");
                 // close and free
+                server->stage = STAGE_ERROR;
                 close_and_free_remote(EV_A_ remote);
                 close_and_free_server(EV_A_ server);
             }
@@ -627,11 +660,6 @@ main(int argc, char **argv)
     }
 #endif
 
-    no_delay   = conf.no_delay;
-    fast_open  = conf.fast_open;
-    verbose    = conf.verbose;
-    ipv6first  = conf.ipv6_first;
-    remote_dns = conf.remote_dns;
 #ifdef __ANDROID__
     stat_path  = conf.stat_path;
 #endif

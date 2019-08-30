@@ -212,6 +212,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
         if (verbose) {
             LOGI("server_recv closing the connection");
         }
+        server->stage = STAGE_TIMEOUT;
         close_and_free_remote(EV_A_ remote);
         close_and_free_server(EV_A_ server);
         return;
@@ -222,6 +223,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             return;
         } else {
             ERROR("server recv");
+            server->stage = STAGE_ERROR;
             close_and_free_remote(EV_A_ remote);
             close_and_free_server(EV_A_ server);
             return;
@@ -352,6 +354,7 @@ server_send_cb(EV_P_ ev_io *w, int revents)
         if (s == -1) {
             if (errno != EAGAIN && errno != EWOULDBLOCK) {
                 ERROR("server_send_send");
+                server->stage = STAGE_ERROR;
                 close_and_free_remote(EV_A_ remote);
                 close_and_free_server(EV_A_ server);
             }
@@ -401,12 +404,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
         }
 
         close_and_free_remote(EV_A_ remote);
-        if (!reuse_conn) {
-            close_and_free_server(EV_A_ server);
-        } else {
-            server->stage = STAGE_INIT;
-            ev_io_start(EV_A_ & server->recv_ctx->io);
-        }
+        close_and_free_server(EV_A_ server);
         return;
     } else if (r == -1) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -450,6 +448,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
             ev_io_start(EV_A_ & server->send_ctx->io);
         } else {
             ERROR("remote_recv_send");
+            server->stage = STAGE_ERROR;
             close_and_free_remote(EV_A_ remote);
             close_and_free_server(EV_A_ server);
             return;
@@ -656,9 +655,5 @@ main(int argc, char **argv)
     }
 #endif
 
-    no_delay  = conf.no_delay;
-    fast_open = conf.fast_open;
-    verbose   = conf.verbose;
-    ipv6first = conf.ipv6_first;
     return start_relay(&conf, NULL, NULL);
 }

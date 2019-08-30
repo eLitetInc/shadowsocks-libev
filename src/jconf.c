@@ -355,6 +355,7 @@ parse_jconf(jconf_t *conf, const char *file)
         { "plugin_opts",    jconf_type_string,      &conf->plugin_opts      },
         { "fast_open",      jconf_type_boolean,     &conf->fast_open        },
         { "reuse_port",     jconf_type_boolean,     &conf->reuse_port       },
+        { "reuse_conn",     jconf_type_boolean,     &conf->reuse_conn       },
         { "remote_dns",     jconf_type_boolean,     &conf->remote_dns       },
         { "nofile",         jconf_type_int,         &conf->nofile           },
         { "nameserver",     jconf_type_string,      &conf->nameserver       },
@@ -401,6 +402,7 @@ parse_argopts(jconf_t *conf, int argc, char **argv)
         { "plugin",      required_argument, NULL, GETOPT_VAL_PLUGIN      },
         { "plugin-opts", required_argument, NULL, GETOPT_VAL_PLUGIN_OPTS },
         { "reuse-port",  no_argument,       NULL, GETOPT_VAL_REUSE_PORT  },
+        { "reuse-conn",  no_argument,       NULL, GETOPT_VAL_REUSE_CONN  },
         { "no-delay",    no_argument,       NULL, GETOPT_VAL_NODELAY     },
 #ifndef MODULE_TUNNEL
         { "acl",         required_argument, NULL, GETOPT_VAL_ACL         },
@@ -460,6 +462,7 @@ parse_argopts(jconf_t *conf, int argc, char **argv)
         { GETOPT_VAL_PLUGIN_OPTS,   jconf_type_string,   -1,      &conf->plugin_opts  },
         { GETOPT_VAL_KEY,           jconf_type_string,   -1,      &conf->key          },
         { GETOPT_VAL_REUSE_PORT,    jconf_type_boolean,  -1,      &conf->reuse_port   },
+        { GETOPT_VAL_REUSE_CONN,    jconf_type_boolean,  -1,      &conf->reuse_conn   },
         { GETOPT_VAL_LOG,           jconf_type_string,   -1,      &conf->log          },
         { GETOPT_VAL_PASSWORD,      jconf_type_string,
                                             required_argument,    &conf->password     },

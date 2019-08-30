@@ -90,12 +90,15 @@ new_remote(server_t *server)
     remote_t *remote
         = ss_calloc(1, sizeof(*remote));
 
+    remote->fd       = -1;
     remote->recv_ctx = ss_malloc(sizeof(remote_ctx_t));
     remote->send_ctx = ss_malloc(sizeof(remote_ctx_t));
     remote->buf      = ss_malloc(sizeof(buffer_t));
+
     balloc(remote->buf, SOCKET_BUF_SIZE);
     memset(remote->recv_ctx, 0, sizeof(remote_ctx_t));
     memset(remote->send_ctx, 0, sizeof(remote_ctx_t));
+
     remote->recv_ctx->remote    = remote;
     remote->recv_ctx->connected = 0;
     remote->send_ctx->remote    = remote;
@@ -115,9 +118,7 @@ new_server(int fd)
     server->recv_ctx = ss_malloc(sizeof(server_ctx_t));
     server->send_ctx = ss_malloc(sizeof(server_ctx_t));
     server->buf      = ss_malloc(sizeof(buffer_t));
-    server->abuf     = ss_malloc(sizeof(buffer_t));
     balloc(server->buf, SOCKET_BUF_SIZE);
-    balloc(server->abuf, SOCKET_BUF_SIZE);
     memset(server->recv_ctx, 0, sizeof(server_ctx_t));
     memset(server->send_ctx, 0, sizeof(server_ctx_t));
     server->stage               = STAGE_INIT;
@@ -148,6 +149,7 @@ remote_timeout_cb(EV_P_ ev_timer *watcher, int revents)
         LOGI("TCP connection timed out");
     }
 
+    server->stage = STAGE_TIMEOUT;
     close_and_free_remote(EV_A_ remote);
     close_and_free_server(EV_A_ server);
 }
@@ -273,7 +275,11 @@ init_remote(EV_P_ remote_t *remote, remote_cnf_t *conf)
     int remotefd = -1;
     if (reuse_conn) {
         int *socket = cache_popfront(conf->sockets, true);
-        if (socket) remotefd = *(int *)socket;
+        if (socket) {
+            remotefd = *socket;
+            if (verbose)
+                LOGI("socket successfully reused");
+        }
     }
 
     if (remotefd == -1) {
@@ -466,6 +472,7 @@ server_timeout_cb(EV_P_ ev_timer *watcher, int revents)
         LOGI("TCP connection timed out");
     }
 
+    server->stage = STAGE_TIMEOUT;
     close_and_free_remote(EV_A_ remote);
     close_and_free_server(EV_A_ server);
 }
@@ -548,6 +555,7 @@ create_remote(EV_P_ remote_t *remote,
 
         if (r == -1 && errno != CONNECT_IN_PROGRESS) {
             ERROR("connect");
+            server->stage = STAGE_ERROR;
             close_and_free_remote(EV_A_ remote);
             return -1;
         }
@@ -701,6 +709,15 @@ close_and_free_remote(EV_P_ remote_t *remote)
         ev_io_stop(EV_A_ & remote->recv_ctx->io);
 #ifdef MODULE_LOCAL
         ev_timer_stop(EV_A_ & remote->send_ctx->watcher);
+        if (reuse_conn && remote->fd >= 0 &&
+            remote->profile && remote->server &&
+            remote->server->stage != STAGE_ERROR &&
+            cache_insert(remote->profile->sockets,
+                         &(int) { remote->fd }, sizeof(int), NULL) == 0)
+        {
+            free_remote(remote);
+            return;
+        }
 #endif
         close(remote->fd);
         free_remote(remote);
@@ -711,10 +728,6 @@ void
 free_server(server_t *server)
 {
 #ifdef MODULE_REMOTE
-    if (verbose) {
-        server_conn--;
-        LOGI("current server connection: %d", server_conn);
-    }
     if (server->e_ctx != NULL) {
         server->crypto->ctx_release(server->e_ctx);
         ss_free(server->e_ctx);
@@ -744,10 +757,6 @@ free_server(server_t *server)
         bfree(server->buf);
         ss_free(server->buf);
     }
-    if (server->abuf != NULL) {
-        bfree(server->abuf);
-        ss_free(server->abuf);
-    }
     ss_free(server->recv_ctx);
     ss_free(server->send_ctx);
     ss_free(server);
@@ -758,10 +767,23 @@ close_and_free_server(EV_P_ server_t *server)
 {
     if (server != NULL) {
         ev_io_stop(EV_A_ & server->send_ctx->io);
-        ev_io_stop(EV_A_ & server->recv_ctx->io);
 #ifdef MODULE_REMOTE
         ev_timer_stop(EV_A_ & server->recv_ctx->watcher);
+        if (reuse_conn &&
+            server->stage != STAGE_ERROR)
+        {
+            crypto_t *crypto = server->crypto;
+            crypto->ctx_init(crypto->cipher, server->e_ctx, 1);
+            crypto->ctx_init(crypto->cipher, server->d_ctx, 0);
+
+            server->stage = STAGE_INIT;
+            ev_io_start(EV_A_ & server->recv_ctx->io);
+            return;
+        }
+        if (verbose)
+            LOGI("current server connection: %d", server_conn--);
 #endif
+        ev_io_stop(EV_A_ & server->recv_ctx->io);
         close(server->fd);
         free_server(server);
     }
@@ -775,6 +797,7 @@ free_connections(struct ev_loop *loop)
     cork_dllist_foreach(&connections, curr, next,
                         server_t, server, entries) {
         if (server != NULL) {
+            server->stage = STAGE_TIMEOUT;
             close_and_free_remote(EV_A_ server->remote);
             close_and_free_server(EV_A_ server);
         }
@@ -868,6 +891,10 @@ start_relay(jconf_t *conf,
 #endif
     }
 
+    if (conf->reuse_conn) {
+        LOGI("enabled connection reuse");
+    }
+
 #ifdef __MINGW32__
     winsock_init();
 #endif
@@ -900,6 +927,7 @@ start_relay(jconf_t *conf,
     }
 #endif
 
+    remote_dns = conf->remote_dns;
     if (!conf->remote_dns) {
         LOGI("disabled remote domain resolution");
     }
@@ -1218,7 +1246,13 @@ start_relay(jconf_t *conf,
     }
 #endif
 
-    // Init connections
+    no_delay   = conf->no_delay;
+    fast_open  = conf->fast_open;
+    verbose    = conf->verbose;
+    ipv6first  = conf->ipv6_first;
+    reuse_conn = conf->reuse_conn;
+
+    // init connections
     cork_dllist_init(&connections);
 
     // start ev loop
@@ -1245,6 +1279,14 @@ start_relay(jconf_t *conf,
                     ss_free(remote_cnf->crypto);
                 if (remote_cnf->addr)
                     ss_free(remote_cnf->addr);
+                if (remote_cnf->sockets) {
+                    struct cache_entry *element;
+                    cache_foreach(remote_cnf->sockets, element) {
+                        int *socket = element->key;
+                        if (socket) close(*socket);
+                    }
+                    cache_delete(remote_cnf->sockets, false);
+                }
                 ss_free(remote_cnf);
             }
         }

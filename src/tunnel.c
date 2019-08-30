@@ -116,6 +116,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             return;
         } else {
             ERROR("send");
+            server->stage = STAGE_ERROR;
             close_and_free_remote(EV_A_ remote);
             close_and_free_server(EV_A_ server);
             return;
@@ -184,6 +185,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
 
     if (r == 0) {
         // connection closed
+        server->stage = STAGE_ERROR;
         close_and_free_remote(EV_A_ remote);
         close_and_free_server(EV_A_ server);
         return;
@@ -194,6 +196,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
             return;
         } else {
             ERROR("remote recv");
+            server->stage = STAGE_ERROR;
             close_and_free_remote(EV_A_ remote);
             close_and_free_server(EV_A_ server);
             return;
@@ -228,7 +231,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
         }
     } else if (s < server->buf->len) {
         server->buf->len -= s;
-        server->buf->idx  = s;
+        server->buf->idx += s;
         ev_io_stop(EV_A_ & remote_recv_ctx->io);
         ev_io_start(EV_A_ & server->send_ctx->io);
     }
@@ -257,7 +260,6 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
             remote_send_ctx->connected = 1;
 
             int err = crypto->encrypt(remote->buf, remote->e_ctx, SOCKET_BUF_SIZE);
-
             if (err) {
                 LOGE("invalid password or cipher");
                 close_and_free_remote(EV_A_ remote);
@@ -270,6 +272,7 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
             if (errno != CONNECT_IN_PROGRESS) {
                 ERROR("getpeername");
                 // not connected
+                server->stage = STAGE_ERROR;
                 close_and_free_remote(EV_A_ remote);
                 close_and_free_server(EV_A_ server);
             }
@@ -290,6 +293,7 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
             if (errno != EAGAIN && errno != EWOULDBLOCK) {
                 ERROR("send");
                 // close and free
+                server->stage = STAGE_ERROR;
                 close_and_free_remote(EV_A_ remote);
                 close_and_free_server(EV_A_ server);
             }
@@ -333,6 +337,7 @@ accept_cb(EV_P_ ev_io *w, int revents)
 
     int r = create_remote(EV_A_ remote, NULL, &listener->destaddr, 0);
     if (r == -1) {
+        server->stage = STAGE_ERROR;
         close_and_free_remote(EV_A_ remote);
         close_and_free_server(EV_A_ server);
     } else {
@@ -373,10 +378,6 @@ main(int argc, char **argv)
     }
 #endif
 
-    no_delay   = conf.no_delay;
-    ipv6first  = conf.ipv6_first;
-    fast_open  = conf.fast_open;
-    verbose    = conf.verbose;
 #ifdef __ANDROID__
     vpn        = conf.vpn;
 #endif

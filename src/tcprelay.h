@@ -71,7 +71,6 @@ typedef struct server {
     struct remote *remote;
 
     buffer_t *buf;
-    buffer_t *abuf;
 
 #ifdef MODULE_REMOTE
     int frag;
@@ -123,13 +122,15 @@ typedef struct remote {
 } remote_t;
 
 enum {
-    STAGE_ERROR = -1,   /* Error detected                   */
+    STAGE_ERROR   = -1, /* Error detected                   */
+    STAGE_TIMEOUT = -1, /* Connection timed out             */
     STAGE_INIT,         /* Initial stage                    */
     STAGE_HANDSHAKE,    /* Handshake with client            */
     STAGE_SNI,          /* Parse HTTP/SNI header            */
     STAGE_RESOLVE,      /* Resolve the hostname             */
     STAGE_STREAM,       /* Stream between client and server */
-    STAGE_STOP          /* Server stop to respond           */
+    STAGE_STOP,         /* Server stop to respond           */
+    STAGE_IDLE          /* Server ready to be reused        */
 };
 
 void accept_cb(EV_P_ ev_io *, int);

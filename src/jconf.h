@@ -63,8 +63,7 @@ typedef struct jconf_args {
 } jconf_args_t;
 
 typedef struct {
-    char *host;
-    char *port;
+    char *host, *port;
 } ss_addr_t;
 
 typedef struct {
@@ -80,8 +79,7 @@ typedef struct {
 } ss_remote_t;
 
 typedef struct {
-    char *port;
-    char *password;
+    char *port, *password;
 } ss_port_password_t;
 
 typedef struct {
@@ -109,6 +107,7 @@ typedef struct {
     char *plugin_opts;
     int fast_open;
     int reuse_port;
+    int reuse_conn;
     int remote_dns;
     int nofile;
 
@@ -156,6 +155,7 @@ const jconf_t jconf_default = {
 enum {
     GETOPT_VAL_NULL,
     GETOPT_VAL_REUSE_PORT,
+    GETOPT_VAL_REUSE_CONN,
     GETOPT_VAL_FAST_OPEN,
     GETOPT_VAL_NODELAY,
     GETOPT_VAL_ACL,
