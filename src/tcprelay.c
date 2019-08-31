@@ -87,17 +87,12 @@ static int ret_val = 0;
 remote_t *
 new_remote(server_t *server)
 {
-    remote_t *remote
-        = ss_calloc(1, sizeof(*remote));
+    remote_t *remote = ss_malloc(sizeof(*remote));
 
     remote->fd       = -1;
-    remote->recv_ctx = ss_malloc(sizeof(remote_ctx_t));
-    remote->send_ctx = ss_malloc(sizeof(remote_ctx_t));
-    remote->buf      = ss_malloc(sizeof(buffer_t));
-
-    balloc(remote->buf, SOCKET_BUF_SIZE);
-    memset(remote->recv_ctx, 0, sizeof(remote_ctx_t));
-    memset(remote->send_ctx, 0, sizeof(remote_ctx_t));
+    remote->recv_ctx = ss_calloc(1, sizeof(remote_ctx_t));
+    remote->send_ctx = ss_calloc(1, sizeof(remote_ctx_t));
+    remote->buf      = new_buffer(SOCKET_BUF_SIZE);
 
     remote->recv_ctx->remote    = remote;
     remote->recv_ctx->connected = 0;
@@ -112,17 +107,14 @@ new_remote(server_t *server)
 server_t *
 new_server(int fd)
 {
-    server_t *server
-        = ss_calloc(1, sizeof(*server));
+    server_t *server = ss_malloc(sizeof(*server));
 
-    server->recv_ctx = ss_malloc(sizeof(server_ctx_t));
-    server->send_ctx = ss_malloc(sizeof(server_ctx_t));
-    server->buf      = ss_malloc(sizeof(buffer_t));
-    balloc(server->buf, SOCKET_BUF_SIZE);
-    memset(server->recv_ctx, 0, sizeof(server_ctx_t));
-    memset(server->send_ctx, 0, sizeof(server_ctx_t));
+    server->fd       = fd;
+    server->recv_ctx = ss_calloc(1, sizeof(server_ctx_t));
+    server->send_ctx = ss_calloc(1, sizeof(server_ctx_t));
+    server->buf      = new_buffer(SOCKET_BUF_SIZE);
+
     server->stage               = STAGE_INIT;
-    server->fd                  = fd;
     server->recv_ctx->server    = server;
     server->recv_ctx->connected = 0;
     server->send_ctx->server    = server;
@@ -396,15 +388,13 @@ new_remote(server_t *server)
     if (verbose)
         remote_conn++;
 
-    remote_t *remote
-        = ss_calloc(1, sizeof(*remote));
+    remote_t *remote = ss_malloc(sizeof(*remote));
 
-    remote->recv_ctx = ss_malloc(sizeof(remote_ctx_t));
-    remote->send_ctx = ss_malloc(sizeof(remote_ctx_t));
-    remote->buf      = ss_malloc(sizeof(buffer_t));
-    balloc(remote->buf, SOCKET_BUF_SIZE);
-    memset(remote->recv_ctx, 0, sizeof(remote_ctx_t));
-    memset(remote->send_ctx, 0, sizeof(remote_ctx_t));
+    remote->fd       = -1;
+    remote->recv_ctx = ss_calloc(1, sizeof(remote_ctx_t));
+    remote->send_ctx = ss_calloc(1, sizeof(remote_ctx_t));
+    remote->buf      = new_buffer(SOCKET_BUF_SIZE);
+
     remote->recv_ctx->remote    = remote;
     remote->recv_ctx->connected = 0;
     remote->send_ctx->remote    = remote;
@@ -420,16 +410,13 @@ new_server(int fd, listen_ctx_t *listener)
     if (verbose)
         server_conn++;
 
-    server_t *server
-        = ss_calloc(1, sizeof(*server));
+    server_t *server = ss_malloc(sizeof(*server));
 
-    server->recv_ctx = ss_malloc(sizeof(server_ctx_t));
-    server->send_ctx = ss_malloc(sizeof(server_ctx_t));
-    server->buf      = ss_malloc(sizeof(buffer_t));
-    memset(server->recv_ctx, 0, sizeof(server_ctx_t));
-    memset(server->send_ctx, 0, sizeof(server_ctx_t));
-    balloc(server->buf, SOCKET_BUF_SIZE);
-    server->fd                  = fd;
+    server->fd       = fd;
+    server->recv_ctx = ss_calloc(1, sizeof(server_ctx_t));
+    server->send_ctx = ss_calloc(1, sizeof(server_ctx_t));
+    server->buf      = new_buffer(SOCKET_BUF_SIZE);
+
     server->recv_ctx->server    = server;
     server->recv_ctx->connected = 0;
     server->send_ctx->server    = server;
@@ -555,8 +542,6 @@ create_remote(EV_P_ remote_t *remote,
 
         if (r == -1 && errno != CONNECT_IN_PROGRESS) {
             ERROR("connect");
-            server->stage = STAGE_ERROR;
-            close_and_free_remote(EV_A_ remote);
             return -1;
         }
     }

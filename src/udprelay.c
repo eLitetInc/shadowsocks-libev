@@ -349,8 +349,7 @@ new_remote(int fd, int timeout)
     remote->fd = fd;
 
     ev_io_init(&remote->io, remote_recv_cb, fd, EV_READ);
-    ev_timer_init(&remote->watcher, remote_timeout_cb,
-                  max(timeout, MIN_UDP_TIMEOUT), 0);
+    ev_timer_init(&remote->watcher, remote_timeout_cb, timeout, timeout);
     return remote;
 }
 
@@ -792,6 +791,8 @@ init_udprelay(EV_P_ listen_ctx_t *listener)
         packet_size = listener->mtu - DGRAM_PKT_HDR_SIZE;
         buf_size    = packet_size * 2;
     }
+
+    listener->timeout = max(listener->timeout, MIN_UDP_TIMEOUT);
 
     server_t *server = new_server(listener->fd, listener);
     ev_io_start(EV_A_ & server->io);

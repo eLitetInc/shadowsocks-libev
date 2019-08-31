@@ -187,6 +187,7 @@ resolv_cb(struct sockaddr *addr, void *data)
                     (struct sockaddr_storage *)addr);
 
         if (r == -1) {
+            server->stage = STAGE_ERROR;
             close_and_free_remote(EV_A_ remote);
             close_and_free_server(EV_A_ server);
         } else {
