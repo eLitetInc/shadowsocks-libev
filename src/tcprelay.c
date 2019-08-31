@@ -99,6 +99,7 @@ new_remote(server_t *server)
     remote->send_ctx->remote    = remote;
     remote->send_ctx->connected = 0;
 
+    remote->addr   = NULL;
     remote->server = server;
 
     return remote;
