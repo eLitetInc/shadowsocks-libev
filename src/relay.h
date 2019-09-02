@@ -49,16 +49,16 @@ extern int
 #endif
 
 #ifdef USE_NFCONNTRACK_TOS
-
 #ifndef MARK_MAX_PACKET
 #define MARK_MAX_PACKET 10
 #endif
-
 #ifndef MARK_MASK_PREFIX
 #define MARK_MASK_PREFIX 0xDC00
 #endif
-
 #endif
+
+static const int
+    MIN_TCP_IDLE_TIMEOUT = 24 * 3600;
 
 #define MAX_CONNECT_TIMEOUT 10
 #define MAX_REQUEST_TIMEOUT 30

@@ -117,7 +117,7 @@ typedef struct remote {
     struct remote_ctx *send_ctx;
     struct server *server;
     struct sockaddr_storage *addr;
-    remote_cnf_t *profile;
+    struct cache *sockets;
 } remote_t;
 
 enum {

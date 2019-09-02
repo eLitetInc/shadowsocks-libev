@@ -94,8 +94,8 @@ new_remote(server_t *server)
     remote->send_ctx = ss_calloc(1, sizeof(remote_ctx_t));
     remote->buf      = new_buffer(SOCKET_BUF_SIZE);
 
-    remote->recv_ctx->remote    = remote;
-    remote->send_ctx->remote    = remote;
+    remote->recv_ctx->remote = remote;
+    remote->send_ctx->remote = remote;
 
     remote->addr   = NULL;
     remote->server = server;
@@ -250,22 +250,23 @@ init_remote(EV_P_ remote_t *remote, remote_cnf_t *conf)
     listen_ctx_t *listen_ctx     = server->listen_ctx;
     struct sockaddr_storage *remote_addr = conf->addr;
 
+    int remotefd = -1;
     if (conf->crypto) {
         crypto_t *crypto = remote->crypto = conf->crypto;
+
         remote->e_ctx = ss_malloc(sizeof(cipher_ctx_t));
         remote->d_ctx = ss_malloc(sizeof(cipher_ctx_t));
 
         crypto->ctx_init(crypto->cipher, remote->e_ctx, 1);
         crypto->ctx_init(crypto->cipher, remote->d_ctx, 0);
-    }
 
-    int remotefd = -1;
-    if (reuse_conn) {
-        int *socket = cache_popfront(conf->sockets, true);
-        if (socket) {
-            remotefd = *socket;
-            if (verbose)
-                LOGI("socket successfully reused");
+        if (reuse_conn) {
+            int *socket = cache_popfront(remote->sockets = conf->sockets, true);
+            if (socket) {
+                remotefd = *socket;
+                if (verbose)
+                    LOGI("socket successfully reused");
+            }
         }
     }
 
@@ -324,8 +325,7 @@ init_remote(EV_P_ remote_t *remote, remote_cnf_t *conf)
         }
     }
 
-    remote->fd   = remotefd;
-    remote->profile = conf;
+    remote->fd = remotefd;
 
     ev_io_init(&remote->recv_ctx->io, remote_recv_cb, remotefd, EV_READ);
     ev_io_init(&remote->send_ctx->io, remote_send_cb, remotefd, EV_WRITE);
@@ -429,12 +429,14 @@ new_server(int fd, listen_ctx_t *listener)
     crypto->ctx_init(crypto->cipher, server->d_ctx, 0);
 
     int request_timeout = min(MAX_REQUEST_TIMEOUT, listener->timeout)
-                          + rand() % MAX_REQUEST_TIMEOUT;
+                          + rand() % MAX_REQUEST_TIMEOUT,
+        repeat_interval = max(MIN_TCP_IDLE_TIMEOUT, listener->timeout)
+                          + rand() % listener->timeout;;
 
     ev_io_init(&server->recv_ctx->io, server_recv_cb, fd, EV_READ);
     ev_io_init(&server->send_ctx->io, server_send_cb, fd, EV_WRITE);
     ev_timer_init(&server->recv_ctx->watcher, server_timeout_cb,
-                  request_timeout, long_idle ? 0 : listener->timeout);
+                  request_timeout, repeat_interval);
 
     cork_dllist_add(&connections, &server->entries);
 
@@ -690,10 +692,10 @@ close_and_free_remote(EV_P_ remote_t *remote)
 #ifdef MODULE_LOCAL
         ev_timer_stop(EV_A_ & remote->send_ctx->watcher);
         if (reuse_conn && remote->fd >= 0 &&
-            remote->profile && remote->server &&
+            remote->server &&
             remote->server->stage != STAGE_ERROR &&
-            cache_insert(remote->profile->sockets,
-                         &(int) { remote->fd }, sizeof(int), NULL) == 0)
+            cache_insert(remote->sockets,
+                         &remote->fd, sizeof(remote->fd), NULL) == 0)
         {
             free_remote(remote);
             return;
@@ -748,7 +750,6 @@ close_and_free_server(EV_P_ server_t *server)
     if (server != NULL) {
         ev_io_stop(EV_A_ & server->send_ctx->io);
 #ifdef MODULE_REMOTE
-        ev_timer_again(EV_A_ & server->recv_ctx->watcher);
         if (reuse_conn &&
             server->stage != STAGE_ERROR)
         {
@@ -757,6 +758,7 @@ close_and_free_server(EV_P_ server_t *server)
             crypto->ctx_init(crypto->cipher, server->d_ctx, 0);
 
             server->stage = STAGE_INIT;
+            ev_timer_again(EV_A_ & server->recv_ctx->watcher);
             ev_io_start(EV_A_ & server->recv_ctx->io);
             return;
         }
@@ -1086,10 +1088,6 @@ start_relay(jconf_t *conf,
     } while (*(dscp++) != NULL);
 
 #elif MODULE_REMOTE
-    long_idle = conf->long_idle;
-    if (conf->long_idle)
-        LOGI("enabled TCP long idle connections");
-
     if (conf->nameserver != NULL)
         LOGI("using nameserver: %s", conf->nameserver);
     resolv_init(EV_A_ conf->nameserver, conf->ipv6_first);

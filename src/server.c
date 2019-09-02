@@ -303,8 +303,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             }
         } return;
         case STAGE_STREAM: {
-            if (!long_idle)
-                ev_timer_again(EV_A_ & server->recv_ctx->watcher);
+            ev_timer_again(EV_A_ & server->recv_ctx->watcher);
 
             int s = send(remote->fd, remote->buf->data, remote->buf->len, 0);
             if (s == -1) {
@@ -399,10 +398,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
         return;
     }
 
-    if (long_idle)
-        ev_timer_stop(EV_A_ & server->recv_ctx->watcher);
-    else
-        ev_timer_again(EV_A_ & server->recv_ctx->watcher);
+    ev_timer_again(EV_A_ & server->recv_ctx->watcher);
 
     ssize_t r = recv(remote->fd, server->buf->data, SOCKET_BUF_SIZE, 0);
 

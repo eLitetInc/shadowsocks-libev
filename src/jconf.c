@@ -365,7 +365,6 @@ parse_jconf(jconf_t *conf, const char *file)
         { "mptcp",          jconf_type_boolean,     &conf->mptcp            },
         { "ipv6_first",     jconf_type_boolean,     &conf->ipv6_first       },
         { "no_delay",       jconf_type_boolean,     &conf->no_delay         },
-        { "long_idle",      jconf_type_boolean,     &conf->long_idle        },
         { "workdir",        jconf_type_string,      &conf->workdir          },
         { "acl",            jconf_type_string,      &conf->acl              },
 #ifdef HAS_SYSLOG
@@ -405,7 +404,6 @@ parse_argopts(jconf_t *conf, int argc, char **argv)
         { "reuse-port",  no_argument,       NULL, GETOPT_VAL_REUSE_PORT  },
         { "reuse-conn",  no_argument,       NULL, GETOPT_VAL_REUSE_CONN  },
         { "no-delay",    no_argument,       NULL, GETOPT_VAL_NODELAY     },
-        { "long-idle",   no_argument,       NULL, GETOPT_VAL_LONGIDLE    },
 #ifndef MODULE_TUNNEL
         { "acl",         required_argument, NULL, GETOPT_VAL_ACL         },
 #endif

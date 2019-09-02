@@ -89,7 +89,7 @@ cache_create(struct cache **dst, const size_t capacity,
 int
 cache_delete(struct cache *cache, int keep_data)
 {
-    struct cache_entry *entry, *tmp;
+    struct cache_entry *entry;
 
     if (!cache) {
         return EINVAL;
@@ -98,7 +98,7 @@ cache_delete(struct cache *cache, int keep_data)
     if (keep_data) {
         HASH_CLEAR(hh, cache->entries);
     } else {
-        HASH_ITER(hh, cache->entries, entry, tmp) {
+        cache_foreach(cache, entry) {
             HASH_DEL(cache->entries, entry);
             cache_free(cache, entry);
         }
@@ -126,9 +126,9 @@ cache_clear(struct cache *cache, ev_tstamp age)
     }
 
     ev_tstamp now = ev_time();
-    struct cache_entry *entry, *tmp;
+    struct cache_entry *entry;
 
-    HASH_ITER(hh, cache->entries, entry, tmp) {
+    cache_foreach(cache, entry) {
         if (now - entry->ts > age) {
             HASH_DEL(cache->entries, entry);
             cache_free(cache, entry);
@@ -279,7 +279,6 @@ int
 cache_insert(struct cache *cache, void *key, size_t key_len, void *value)
 {
     struct cache_entry *entry     = NULL;
-    struct cache_entry *tmp_entry = NULL;
 
     if (!cache) {
         return EINVAL;
@@ -296,9 +295,10 @@ cache_insert(struct cache *cache, void *key, size_t key_len, void *value)
     entry->value = value;
     HASH_ADD_KEYPTR(hh, cache->entries, entry->key, key_len, entry);
 
-    if (cache->max_entries > 0
-        && HASH_COUNT(cache->entries) >= cache->max_entries) {
-        HASH_ITER(hh, cache->entries, entry, tmp_entry) {
+    if (cache->max_entries > 0 &&
+        HASH_COUNT(cache->entries) >= cache->max_entries)
+    {
+        cache_foreach(cache, entry) {
             HASH_DELETE(hh, cache->entries, entry);
             return cache_free(cache, entry);
         }
