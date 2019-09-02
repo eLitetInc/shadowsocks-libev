@@ -231,13 +231,12 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
         }
     }
 
+    tx += r;
     if (server->stage == STAGE_STOP) {
         return;
     }
 
-    tx      += r;
     buf->len = r;
-
     int err = crypto->decrypt(buf, server->d_ctx, SOCKET_BUF_SIZE);
 
     switch (err) {
@@ -259,16 +258,16 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
     switch (server->stage) {
         case STAGE_INIT: {
             ssocks_addr_t destaddr = {};
-            int offset = parse_ssocks_header(remote->buf, &destaddr, 0);
+            int offset = parse_ssocks_header(buf, &destaddr, 0);
 
-            if (offset < 0 || remote->buf->len < offset) {
+            if (offset < 0 || buf->len < offset) {
                 report_addr(EV_A_ server, "invalid request length");
                 return;
             }
 
             server->remote = remote;
-            remote->buf->len -= offset;
-            remote->buf->idx += offset;
+            buf->len -= offset;
+            buf->idx += offset;
 
             ev_io_stop(EV_A_ & server_recv_ctx->io);
             if (destaddr.dname != NULL) {
@@ -305,11 +304,11 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
         case STAGE_STREAM: {
             ev_timer_again(EV_A_ & server->recv_ctx->watcher);
 
-            int s = send(remote->fd, remote->buf->data, remote->buf->len, 0);
+            int s = send(remote->fd, buf->data, buf->len, 0);
             if (s == -1) {
                 if (errno == EAGAIN || errno == EWOULDBLOCK) {
                     // no data, wait for send
-                    remote->buf->idx = 0;
+                    buf->idx = 0;
                     ev_io_stop(EV_A_ & server_recv_ctx->io);
                     ev_io_start(EV_A_ & remote->send_ctx->io);
                 } else {
@@ -318,8 +317,8 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                     close_and_free_server(EV_A_ server);
                 }
             } else if (s < remote->buf->len) {
-                remote->buf->len -= s;
-                remote->buf->idx  = s;
+                buf->len -= s;
+                buf->idx += s;
                 ev_io_stop(EV_A_ & server_recv_ctx->io);
                 ev_io_start(EV_A_ & remote->send_ctx->io);
             }

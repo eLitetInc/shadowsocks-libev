@@ -95,7 +95,6 @@ typedef struct remote {
     ev_io io;
     ev_timer watcher;
     int fd, sfd;
-    int direct;
 
 #ifdef MODULE_LOCAL
     crypto_t *crypto;
@@ -705,16 +704,16 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
         destaddr->dname = NULL;
     }
 
-    remote->direct = acl_enabled ?
-                     search_acl(ACL_ATYP_SSOCKS, destaddr, ACL_UNSPCLIST) : 0;
+    int direct = acl_enabled ?
+                 search_acl(ACL_ATYP_SSOCKS, destaddr, ACL_UNSPCLIST) : 0;
 
     if (verbose) {
-        LOGI("[udp] %s %s", remote->direct ? "bypassing" : "connecting to",
+        LOGI("[udp] %s %s", direct ? "bypassing" : "connecting to",
              destaddr->dname ? hostname_readable(destaddr->dname, destaddr->dname_len, destaddr->port)
                              : sockaddr_readable("%a:%p", destaddr->addr));
     }
 
-    if (remote->crypto)
+    if (!direct)
 bailed: {
         int remote_idx = acl_enabled ?
                          search_acl(ACL_ATYP_SSOCKS, destaddr, ACL_DELEGATION) :
@@ -752,7 +751,6 @@ bailed: {
             get_sockaddr_r(destaddr->dname, NULL,
                            destaddr->port, remote_addr, 1, ipv6first) == -1)
         {
-            remote->direct = 0;
             LOGE("failed to resolve %s", destaddr->dname);
             goto bailed;
         }
