@@ -72,28 +72,30 @@
  *
  */
 
-#define NONE                -1
-#define TABLE               0
-#define RC4                 1
-#define RC4_MD5             2
-#define AES_128_CFB         3
-#define AES_192_CFB         4
-#define AES_256_CFB         5
-#define AES_128_CTR         6
-#define AES_192_CTR         7
-#define AES_256_CTR         8
-#define BF_CFB              9
-#define CAMELLIA_128_CFB    10
-#define CAMELLIA_192_CFB    11
-#define CAMELLIA_256_CFB    12
-#define CAST5_CFB           13
-#define DES_CFB             14
-#define IDEA_CFB            15
-#define RC2_CFB             16
-#define SEED_CFB            17
-#define SALSA20             18
-#define CHACHA20            19
-#define CHACHA20IETF        20
+enum {
+    NONE = -1,
+    TABLE,
+    RC4,
+    RC4_MD5,
+    AES_128_CFB,
+    AES_192_CFB,
+    AES_256_CFB,
+    AES_128_CTR,
+    AES_192_CTR,
+    AES_256_CTR,
+    BF_CFB,
+    CAMELLIA_128_CFB,
+    CAMELLIA_192_CFB,
+    CAMELLIA_256_CFB,
+    CAST5_CFB,
+    DES_CFB,
+    IDEA_CFB,
+    RC2_CFB,
+    SEED_CFB,
+    SALSA20,
+    CHACHA20,
+    CHACHA20IETF
+} methods;
 
 const char *supported_stream_ciphers[STREAM_CIPHER_NUM] = {
     "table",
@@ -236,14 +238,12 @@ stream_cipher_ctx_init(cipher_ctx_t *ctx, int method, int enc)
     const char *ciphername    = supported_stream_ciphers[method];
     const cipher_kt_t *cipher = stream_get_cipher_type(method);
 
-    ctx->evp = ss_malloc(sizeof(cipher_evp_t));
-    memset(ctx->evp, 0, sizeof(cipher_evp_t));
-    cipher_evp_t *evp = ctx->evp;
-
     if (cipher == NULL) {
         LOGE("Cipher %s not found in mbed TLS library", ciphername);
         FATAL("Cannot initialize mbed TLS cipher");
     }
+
+    cipher_evp_t *evp = ctx->evp = ss_calloc(1, sizeof(*evp));
     mbedtls_cipher_init(evp);
     if (mbedtls_cipher_setup(evp, cipher) != 0) {
         FATAL("Cannot initialize mbed TLS cipher context");
@@ -256,7 +256,6 @@ stream_ctx_release(cipher_ctx_t *cipher_ctx)
     if (cipher_ctx->chunk != NULL) {
         bfree(cipher_ctx->chunk);
         ss_free(cipher_ctx->chunk);
-        cipher_ctx->chunk = NULL;
     }
 
     if (cipher_ctx->cipher->method >= SALSA20) {

@@ -303,6 +303,9 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             }
         } return;
         case STAGE_STREAM: {
+            if (!long_idle)
+                ev_timer_again(EV_A_ & server->recv_ctx->watcher);
+
             int s = send(remote->fd, remote->buf->data, remote->buf->len, 0);
             if (s == -1) {
                 if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -395,6 +398,11 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
         close_and_free_remote(EV_A_ remote);
         return;
     }
+
+    if (long_idle)
+        ev_timer_stop(EV_A_ & server->recv_ctx->watcher);
+    else
+        ev_timer_again(EV_A_ & server->recv_ctx->watcher);
 
     ssize_t r = recv(remote->fd, server->buf->data, SOCKET_BUF_SIZE, 0);
 
@@ -518,9 +526,6 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
         struct sockaddr_storage addr = {};
         int r = getpeername(remote->fd, (struct sockaddr *)&addr, &(socklen_t) { sizeof(addr) });
         if (r == 0) {
-            // connected, stop the request timeout timer
-            ev_timer_stop(EV_A_ & server->recv_ctx->watcher);
-
             remote_send_ctx->connected = 1;
 
             if (remote->buf->len == 0) {

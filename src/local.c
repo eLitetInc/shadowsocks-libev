@@ -237,7 +237,7 @@ server_stream(EV_P_ ev_io *w, buffer_t *buf)
     }
 
     // insert shadowsocks header
-    if (!remote->direct) {
+    if (remote->crypto) {
 #ifdef __ANDROID__
         tx += remote->buf->len;
 #endif
@@ -484,7 +484,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
 
     server->buf->len = r;
 
-    if (!remote->direct) {
+    if (remote->crypto) {
 #ifdef __ANDROID__
         rx += server->buf->len;
         stat_update_cb();

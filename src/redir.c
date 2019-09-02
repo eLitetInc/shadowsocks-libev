@@ -65,7 +65,8 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
 
     if (r == 0) {
         // connection closed
-        server->stage = STAGE_ERROR;
+        if (!remote->send_ctx->connected)
+            server->stage = STAGE_ERROR;
         close_and_free_remote(EV_A_ remote);
         close_and_free_server(EV_A_ server);
         return;
@@ -76,7 +77,8 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             return;
         } else {
             ERROR("server recv");
-            server->stage = STAGE_ERROR;
+            if (!remote->send_ctx->connected)
+                server->stage = STAGE_ERROR;
             close_and_free_remote(EV_A_ remote);
             close_and_free_server(EV_A_ server);
             return;
@@ -109,7 +111,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
         return;
     }
 
-    if (!remote->direct) {
+    if (remote->crypto) {
         crypto_t *crypto = remote->crypto;
         int err = crypto->encrypt(remote->buf, remote->e_ctx, SOCKET_BUF_SIZE);
 
@@ -216,7 +218,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
 
     server->buf->len = r;
 
-    if (!remote->direct) {
+    if (remote->crypto) {
         crypto_t *crypto = remote->crypto;
         int err = crypto->decrypt(server->buf, remote->d_ctx, SOCKET_BUF_SIZE);
         if (err == CRYPTO_ERROR) {
@@ -272,7 +274,7 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
         if (remote_connected(remote)) {
             remote_send_ctx->connected = 1;
 
-            if (!remote->direct) {
+            if (remote->crypto) {
                 crypto_t *crypto = remote->crypto;
                 if (crypto->encrypt(remote->buf, remote->e_ctx, SOCKET_BUF_SIZE)) {
                     LOGE("invalid password or cipher");

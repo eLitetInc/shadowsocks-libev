@@ -131,13 +131,6 @@ extern void stat_update_cb();
 #endif
 #endif
 
-extern int acl;
-extern int verbose;
-extern int ipv6first;
-#ifdef MODULE_LOCAL
-extern int remote_dns;
-#endif
-
 static int packet_size  = DGRAM_PKT_SIZE;
 static int buf_size     = DGRAM_BUF_SIZE;
 
@@ -159,9 +152,8 @@ resolv_free_cb(void *data)
 {
     query_t *query = (query_t *)data;
 
-    if (query->buf != NULL) {
+    if (query->buf != NULL)
         free_buffer(query->buf);
-    }
     ss_free(query);
 }
 
@@ -376,6 +368,8 @@ close_and_free_remote(EV_P_ remote_t *remote)
         ev_timer_stop(EV_A_ & remote->watcher);
 
         close(remote->fd);
+        if (remote->saddr != NULL)
+            ss_free(remote->saddr);
 #ifdef MODULE_SOCKS
         if (remote->abuf != NULL)
             free_buffer(remote->abuf);
@@ -443,23 +437,26 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
         LOGI("[udp] remote received a packet");
         if (r > packet_size) {
             LOGI("[udp] remote_recv_recvfrom fragmentation, "
-                 "      MTU should at least be: " SSIZE_FMT, r + DGRAM_PKT_HDR_SIZE);
+                 "      MTU should at least be: " SSIZE_FMT, r + DGRAM_HDR_SIZE);
         }
     }
 
     buf->len = r;
 
 #ifdef MODULE_LOCAL
-    crypto_t *crypto = remote->crypto;
-    int err = crypto->decrypt_all(buf, crypto->cipher, buf_size);
-    if (err) {
-        // drop the packet silently
-        close_and_free_remote(EV_A_ remote);
-        goto CLEAN_UP;
+    if (remote->crypto) {
+        crypto_t *crypto = remote->crypto;
+        int err = crypto->decrypt_all(buf, crypto->cipher, buf_size);
+        if (err) {
+            // drop the packet silently
+            close_and_free_remote(EV_A_ remote);
+            goto CLEAN_UP;
+        }
     }
 
 #ifdef MODULE_SOCKS
     bprepend(buf, remote->abuf, buf_size);
+    free_buffer(remote->abuf);
 #ifdef __ANDROID__
     rx += buf->len;
     stat_update_cb();
@@ -575,7 +572,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
         LOGI("[udp] server received a packet");
         if (buf->len > packet_size) {
             LOGI("[udp] server_recv fragmentation, "
-                 "      MTU should at least be: " SSIZE_FMT, buf->len + DGRAM_PKT_HDR_SIZE);
+                 "      MTU should at least be: " SSIZE_FMT, buf->len + DGRAM_HDR_SIZE);
         }
     }
 
@@ -603,7 +600,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
 
     if (verbose && buf->len > packet_size) {
         LOGI("[udp] server_recv_sendto fragmentation, "
-             "      MTU should at least be: " SSIZE_FMT, buf->len + DGRAM_PKT_HDR_SIZE);
+             "      MTU should at least be: " SSIZE_FMT, buf->len + DGRAM_HDR_SIZE);
     }
 
     remote_t *remote =
@@ -717,13 +714,13 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                              : sockaddr_readable("%a:%p", destaddr->addr));
     }
 
-    if (!remote->direct)
+    if (remote->crypto)
 bailed: {
         int remote_idx = acl_enabled ?
                          search_acl(ACL_ATYP_SSOCKS, destaddr, ACL_DELEGATION) :
                          rand() % listen_ctx->remote_num;
 
-        buffer_t *abuf   = new_buffer(buf_size);
+        buffer_t *abuf   = new_buffer(SSOCKS_HDR_SIZE);
         remote_cnf_t *remote_cnf
                          = listen_ctx->remotes[remote_idx];
         crypto_t *crypto = remote_cnf->crypto;
@@ -788,7 +785,7 @@ void
 init_udprelay(EV_P_ listen_ctx_t *listener)
 {
     if (listener->mtu > 0) {
-        packet_size = listener->mtu - DGRAM_PKT_HDR_SIZE;
+        packet_size = listener->mtu - DGRAM_HDR_SIZE;
         buf_size    = packet_size * 2;
     }
 

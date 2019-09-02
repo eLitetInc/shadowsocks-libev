@@ -46,22 +46,15 @@
 buffer_t *
 new_buffer(size_t capacity)
 {
-    buffer_t *buf = ss_malloc(sizeof(buffer_t));
+    buffer_t *buf = ss_malloc(sizeof(*buf));
     balloc(buf, capacity);
     return buf;
-}
-
-void
-free_buffer(buffer_t *buf)
-{
-    bfree(buf);
-    ss_free(buf);
 }
 
 int
 balloc(buffer_t *ptr, size_t capacity)
 {
-    sodium_memzero(ptr, sizeof(buffer_t));
+    sodium_memzero(ptr, sizeof(*ptr));
     ptr->data     = ss_malloc(capacity);
     ptr->capacity = capacity;
     return capacity;
@@ -172,10 +165,7 @@ crypto_init(const char *password, const char *key, const char *method)
             }
         if (m != -1) {
             cipher_t *cipher = stream_init(password, key, method);
-            if (cipher == NULL)
-                return NULL;
-            crypto_t *crypto = (crypto_t *)ss_malloc(sizeof(crypto_t));
-            crypto_t tmp     = {
+            return cipher ? ss_new(crypto_t, {
                 .cipher      = cipher,
                 .encrypt_all = &stream_encrypt_all,
                 .decrypt_all = &stream_decrypt_all,
@@ -183,9 +173,7 @@ crypto_init(const char *password, const char *key, const char *method)
                 .decrypt     = &stream_decrypt,
                 .ctx_init    = &stream_ctx_init,
                 .ctx_release = &stream_ctx_release,
-            };
-            memcpy(crypto, &tmp, sizeof(crypto_t));
-            return crypto;
+            }) : NULL;
         }
 
         for (i = 0; i < AEAD_CIPHER_NUM; i++)
@@ -195,10 +183,7 @@ crypto_init(const char *password, const char *key, const char *method)
             }
         if (m != -1) {
             cipher_t *cipher = aead_init(password, key, method);
-            if (cipher == NULL)
-                return NULL;
-            crypto_t *crypto = (crypto_t *)ss_malloc(sizeof(crypto_t));
-            crypto_t tmp     = {
+            return cipher ? ss_new(crypto_t, {
                 .cipher      = cipher,
                 .encrypt_all = &aead_encrypt_all,
                 .decrypt_all = &aead_decrypt_all,
@@ -206,9 +191,7 @@ crypto_init(const char *password, const char *key, const char *method)
                 .decrypt     = &aead_decrypt,
                 .ctx_init    = &aead_ctx_init,
                 .ctx_release = &aead_ctx_release,
-            };
-            memcpy(crypto, &tmp, sizeof(crypto_t));
-            return crypto;
+            }) : NULL;
         }
     }
 

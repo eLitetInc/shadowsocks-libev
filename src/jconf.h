@@ -122,6 +122,7 @@ typedef struct {
     int mptcp;
     int ipv6_first;
     int no_delay;
+    int long_idle;
     int verbose;
     char *workdir;
     char *executable;
@@ -158,6 +159,7 @@ enum {
     GETOPT_VAL_REUSE_CONN,
     GETOPT_VAL_FAST_OPEN,
     GETOPT_VAL_NODELAY,
+    GETOPT_VAL_LONGIDLE,
     GETOPT_VAL_ACL,
     GETOPT_VAL_MTU,
     GETOPT_VAL_MPTCP,

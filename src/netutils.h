@@ -99,32 +99,6 @@
 #define INADDR_LOOPBACK 0x7f000001UL
 #endif
 
-#ifndef MAX_FRAG
-#define MAX_FRAG 1
-#endif
-
-#ifdef USE_NFCONNTRACK_TOS
-
-#ifndef MARK_MAX_PACKET
-#define MARK_MAX_PACKET 10
-#endif
-
-#ifndef MARK_MASK_PREFIX
-#define MARK_MASK_PREFIX 0xDC00
-#endif
-
-#endif
-
-#define MAX_CONNECT_TIMEOUT 10
-#define MAX_REQUEST_TIMEOUT 30
-#define MIN_UDP_TIMEOUT     10
-
-#ifdef MODULE_REMOTE
-#define MAX_UDP_SOCKET_NUM 512
-#else
-#define MAX_UDP_SOCKET_NUM 256
-#endif
-
 enum {
     DSCP_EF      = 0x2E,
     DSCP_MIN     = 0x0,
@@ -140,17 +114,17 @@ enum {
 #define MAX_HOSTNAME_LEN 256 // FQCN <= 255 characters
 #define MAX_PORT_STR_LEN 6   // PORT < 65536
 
+static const int
+             SOCKET_BUF_SIZE = 16 * 1024 - 1,
+             DGRAM_HDR_SIZE  = 1 + 28 + 2 + 64,
+             DGRAM_PKT_SIZE  = 1492 - DGRAM_HDR_SIZE,
+             DGRAM_BUF_SIZE  = DGRAM_PKT_SIZE * 2;
+
+#define STREAM_BUF_SIZE SOCKET_BUF_SIZE
+#define MAX_DGRAM_PKT_SIZE  65507
 #ifndef BUF_SIZE
 #define BUF_SIZE 65535
 #endif
-
-#define SOCKET_BUF_SIZE (16 * 1024 - 1) // 16383 Byte, equals to the max chunk size
-#define STREAM_BUF_SIZE SOCKET_BUF_SIZE
-
-#define DGRAM_PKT_SIZE      1397        // 1492 - DGRAM_PKT_HDR_SIZE = 1397, the default MTU for UDP relay
-#define DGRAM_BUF_SIZE      (DGRAM_PKT_SIZE * 2)
-#define DGRAM_PKT_HDR_SIZE  (1 + 28 + 2 + 64)
-#define MAX_DGRAM_PKT_SIZE  65507
 
 typedef struct {
     uint8_t ss_family;

@@ -41,7 +41,34 @@ extern int
     remote_dns,
     fast_open,
     no_delay,
-    reuse_conn;
+    reuse_conn,
+    long_idle;
+
+#ifndef MAX_FRAG
+#define MAX_FRAG 1
+#endif
+
+#ifdef USE_NFCONNTRACK_TOS
+
+#ifndef MARK_MAX_PACKET
+#define MARK_MAX_PACKET 10
+#endif
+
+#ifndef MARK_MASK_PREFIX
+#define MARK_MASK_PREFIX 0xDC00
+#endif
+
+#endif
+
+#define MAX_CONNECT_TIMEOUT 10
+#define MAX_REQUEST_TIMEOUT 30
+#define MIN_UDP_TIMEOUT     10
+
+#ifdef MODULE_REMOTE
+#define MAX_UDP_SOCKET_NUM 512
+#else
+#define MAX_UDP_SOCKET_NUM 256
+#endif
 
 typedef struct remote_cnf {
     char *iface;

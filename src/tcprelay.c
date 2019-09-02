@@ -87,7 +87,7 @@ static int ret_val = 0;
 remote_t *
 new_remote(server_t *server)
 {
-    remote_t *remote = ss_malloc(sizeof(*remote));
+    remote_t *remote = ss_calloc(1, sizeof(*remote));
 
     remote->fd       = -1;
     remote->recv_ctx = ss_calloc(1, sizeof(remote_ctx_t));
@@ -95,9 +95,7 @@ new_remote(server_t *server)
     remote->buf      = new_buffer(SOCKET_BUF_SIZE);
 
     remote->recv_ctx->remote    = remote;
-    remote->recv_ctx->connected = 0;
     remote->send_ctx->remote    = remote;
-    remote->send_ctx->connected = 0;
 
     remote->addr   = NULL;
     remote->server = server;
@@ -108,7 +106,7 @@ new_remote(server_t *server)
 server_t *
 new_server(int fd)
 {
-    server_t *server = ss_malloc(sizeof(*server));
+    server_t *server = ss_calloc(1, sizeof(*server));
 
     server->fd       = fd;
     server->recv_ctx = ss_calloc(1, sizeof(server_ctx_t));
@@ -216,9 +214,7 @@ create_remote(EV_P_ remote_t *remote, buffer_t *buf,
                              : sockaddr_readable("%a:%p", destaddr->addr));
     }
 
-    remote->direct = direct;
-
-    if (!remote->direct)
+    if (!direct)
 bailed: {
         int remote_idx = acl_enabled ?
                          search_acl(ACL_ATYP_SSOCKS, destaddr, ACL_DELEGATION) :
@@ -237,7 +233,6 @@ bailed: {
         get_sockaddr_r(destaddr->dname, NULL,
                        destaddr->port, destaddr->addr, 1, ipv6first) == -1)
     {
-        remote->direct = 0;
         LOGE("failed to resolve %s", destaddr->dname);
         goto bailed;
     }
@@ -255,11 +250,10 @@ init_remote(EV_P_ remote_t *remote, remote_cnf_t *conf)
     listen_ctx_t *listen_ctx     = server->listen_ctx;
     struct sockaddr_storage *remote_addr = conf->addr;
 
-    if (!remote->direct && conf->crypto) {
-        crypto_t *crypto = conf->crypto;
-        remote->crypto   = crypto;
-        remote->e_ctx    = ss_malloc(sizeof(cipher_ctx_t));
-        remote->d_ctx    = ss_malloc(sizeof(cipher_ctx_t));
+    if (conf->crypto) {
+        crypto_t *crypto = remote->crypto = conf->crypto;
+        remote->e_ctx = ss_malloc(sizeof(cipher_ctx_t));
+        remote->d_ctx = ss_malloc(sizeof(cipher_ctx_t));
 
         crypto->ctx_init(crypto->cipher, remote->e_ctx, 1);
         crypto->ctx_init(crypto->cipher, remote->d_ctx, 0);
@@ -389,7 +383,7 @@ new_remote(server_t *server)
     if (verbose)
         remote_conn++;
 
-    remote_t *remote = ss_malloc(sizeof(*remote));
+    remote_t *remote = ss_calloc(1, sizeof(*remote));
 
     remote->fd       = -1;
     remote->recv_ctx = ss_calloc(1, sizeof(remote_ctx_t));
@@ -411,7 +405,7 @@ new_server(int fd, listen_ctx_t *listener)
     if (verbose)
         server_conn++;
 
-    server_t *server = ss_malloc(sizeof(*server));
+    server_t *server = ss_calloc(1, sizeof(*server));
 
     server->fd       = fd;
     server->recv_ctx = ss_calloc(1, sizeof(server_ctx_t));
@@ -440,7 +434,7 @@ new_server(int fd, listen_ctx_t *listener)
     ev_io_init(&server->recv_ctx->io, server_recv_cb, fd, EV_READ);
     ev_io_init(&server->send_ctx->io, server_send_cb, fd, EV_WRITE);
     ev_timer_init(&server->recv_ctx->watcher, server_timeout_cb,
-                  request_timeout, 0);
+                  request_timeout, long_idle ? 0 : listener->timeout);
 
     cork_dllist_add(&connections, &server->entries);
 
@@ -754,7 +748,7 @@ close_and_free_server(EV_P_ server_t *server)
     if (server != NULL) {
         ev_io_stop(EV_A_ & server->send_ctx->io);
 #ifdef MODULE_REMOTE
-        ev_timer_stop(EV_A_ & server->recv_ctx->watcher);
+        ev_timer_again(EV_A_ & server->recv_ctx->watcher);
         if (reuse_conn &&
             server->stage != STAGE_ERROR)
         {
@@ -768,6 +762,7 @@ close_and_free_server(EV_P_ server_t *server)
         }
         if (verbose)
             LOGI("current server connection: %d", server_conn--);
+        ev_timer_stop(EV_A_ & server->recv_ctx->watcher);
 #endif
         ev_io_stop(EV_A_ & server->recv_ctx->io);
         close(server->fd);
@@ -1079,7 +1074,7 @@ start_relay(jconf_t *conf,
         }
 
         if (conf->mode == UDP_ONLY) {
-            LOGI("TCP relay disabled");
+            LOGI("disabled TCP relay");
         }
 
         // Handle additional TOS/DSCP listening ports
@@ -1091,6 +1086,10 @@ start_relay(jconf_t *conf,
     } while (*(dscp++) != NULL);
 
 #elif MODULE_REMOTE
+    long_idle = conf->long_idle;
+    if (conf->long_idle)
+        LOGI("enabled TCP long idle connections");
+
     if (conf->nameserver != NULL)
         LOGI("using nameserver: %s", conf->nameserver);
     resolv_init(EV_A_ conf->nameserver, conf->ipv6_first);

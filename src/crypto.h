@@ -125,8 +125,13 @@ typedef struct crypto {
     void(*const ctx_release) (cipher_ctx_t *);
 } crypto_t;
 
+
+#define free_buffer(buf) { \
+    bfree(buf);     \
+    ss_free(buf);   \
+}
 buffer_t *new_buffer(size_t);
-void free_buffer(buffer_t *);
+
 int balloc(buffer_t *, size_t);
 int brealloc(buffer_t *, size_t, size_t);
 int bprepend(buffer_t *, buffer_t *, size_t);

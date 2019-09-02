@@ -59,7 +59,8 @@ int
     remote_dns = true, // resolve hostname remotely
     fast_open  = false,
     no_delay   = false,
-    reuse_conn = false;
+    reuse_conn = false,
+    long_idle  = false;
 
 int
 create_and_bind(struct sockaddr_storage *storage,
