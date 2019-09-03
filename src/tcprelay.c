@@ -753,7 +753,7 @@ close_and_free_server(EV_P_ server_t *server)
         if (reuse_conn &&
             server->stage != STAGE_ERROR)
         {
-            crypto_t *crypto = server->crypto;
+            //crypto_t *crypto = server->crypto;
             //crypto->ctx_init(crypto->cipher, server->e_ctx, 1);
             //crypto->ctx_init(crypto->cipher, server->d_ctx, 0);
 

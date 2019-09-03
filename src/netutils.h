@@ -114,17 +114,16 @@ enum {
 #define MAX_HOSTNAME_LEN 256 // FQCN <= 255 characters
 #define MAX_PORT_STR_LEN 6   // PORT < 65536
 
-static const int
-             SOCKET_BUF_SIZE = 16 * 1024 - 1,
-             DGRAM_HDR_SIZE  = 1 + 28 + 2 + 64,
-             DGRAM_PKT_SIZE  = 1492 - DGRAM_HDR_SIZE,
-             DGRAM_BUF_SIZE  = DGRAM_PKT_SIZE * 2;
+#define SOCKET_BUF_SIZE (16 * 1024 - 1)
 
 #define STREAM_BUF_SIZE SOCKET_BUF_SIZE
-#define MAX_DGRAM_PKT_SIZE  65507
 #ifndef BUF_SIZE
 #define BUF_SIZE 65535
 #endif
+#define DGRAM_HDR_SIZE  (1 + 28 + 2 + 64)
+#define DGRAM_PKT_SIZE (1492 - DGRAM_HDR_SIZE)
+#define MAX_DGRAM_PKT_SIZE  65507
+#define DGRAM_BUF_SIZE (DGRAM_PKT_SIZE * 2)
 
 typedef struct {
     uint8_t ss_family;
