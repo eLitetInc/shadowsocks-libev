@@ -236,6 +236,11 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
         return;
     }
 
+    if (server->stage == STAGE_INIT) {
+        crypto->ctx_init(crypto->cipher, server->e_ctx, 1);
+        crypto->ctx_init(crypto->cipher, server->d_ctx, 0);
+    }
+
     buf->len = r;
     int err = crypto->decrypt(buf, server->d_ctx, SOCKET_BUF_SIZE);
 
@@ -244,8 +249,8 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             report_addr(EV_A_ server, "authentication error");
             return;
         case CRYPTO_NEED_MORE: {
-            if (server->stage != STAGE_STREAM
-                && server->frag > MAX_FRAG)
+            if (server->stage != STAGE_STREAM &&
+                server->frag > MAX_FRAG)
             {
                 report_addr(EV_A_ server, "malicious fragmentation");
                 return;
@@ -406,7 +411,6 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
         if (verbose) {
             LOGI("remote_recv closing the connection");
         }
-
         close_and_free_remote(EV_A_ remote);
         close_and_free_server(EV_A_ server);
         return;

@@ -425,8 +425,8 @@ new_server(int fd, listen_ctx_t *listener)
     server->crypto   = crypto;
     server->e_ctx    = ss_malloc(sizeof(cipher_ctx_t));
     server->d_ctx    = ss_malloc(sizeof(cipher_ctx_t));
-    crypto->ctx_init(crypto->cipher, server->e_ctx, 1);
-    crypto->ctx_init(crypto->cipher, server->d_ctx, 0);
+    //crypto->ctx_init(crypto->cipher, server->e_ctx, 1);
+    //crypto->ctx_init(crypto->cipher, server->d_ctx, 0);
 
     int request_timeout = min(MAX_REQUEST_TIMEOUT, listener->timeout)
                           + rand() % MAX_REQUEST_TIMEOUT,
@@ -754,8 +754,8 @@ close_and_free_server(EV_P_ server_t *server)
             server->stage != STAGE_ERROR)
         {
             crypto_t *crypto = server->crypto;
-            crypto->ctx_init(crypto->cipher, server->e_ctx, 1);
-            crypto->ctx_init(crypto->cipher, server->d_ctx, 0);
+            //crypto->ctx_init(crypto->cipher, server->e_ctx, 1);
+            //crypto->ctx_init(crypto->cipher, server->d_ctx, 0);
 
             server->stage = STAGE_INIT;
             ev_timer_again(EV_A_ & server->recv_ctx->watcher);
