@@ -25,12 +25,10 @@
 #include "utils.h"
 #include "crypto.h"
 
-enum {
-    SSOCKS_ATYP_IPV4   = 0x01,
-    SSOCKS_ATYP_DOMAIN = 0x03,
-    SSOCKS_ATYP_IPV6   = 0x04,
-    SSOCKS_OPT_ASSOC   = 0x01
-} addrtype;
+#define SSOCKS_ATYP_IPV4    0x01
+#define SSOCKS_ATYP_DOMAIN  0x03
+#define SSOCKS_ATYP_IPV6    0x04
+#define SSOCKS_ATYP_ASSOC   0x08
 
 typedef enum ssocks_module {
     module_local,
@@ -46,7 +44,6 @@ typedef struct {
 
 typedef struct ssocks_hdr {
     uint8_t atyp;
-    union { uint8_t id; };
     union {
         struct in_addr _4;
         struct {
@@ -63,7 +60,6 @@ static const int SSOCKS_HDR_SIZE =
     sizeof(ssocks_hdr_t) + MAX_HOSTNAME_LEN - 1;
 
 typedef struct ssocks_addr {
-    int id;
     char  *dname;
     size_t dname_len;
     struct sockaddr_storage *addr;
@@ -162,7 +158,6 @@ parse_ssocks_header(buffer_t *buf, ssocks_addr_t *destaddr, int offset)
 {
     uint8_t atyp = buf->data[offset++];
 
-assoc:
     // get remote addr and port
     switch (atyp) {
         case SSOCKS_ATYP_IPV4: {
@@ -216,11 +211,7 @@ assoc:
             destaddr->port    = addr->sin6_port;
         } break;
         default:
-        if (destaddr->id <= 0) {
-            atyp >>= SSOCKS_OPT_ASSOC;
-            destaddr->id = buf->data[offset++];
-            goto assoc;
-        } return -1;
+            return -1;
     }
 
     offset += 2;
@@ -230,18 +221,14 @@ assoc:
 static inline void
 create_ssocks_header(buffer_t *buf, ssocks_addr_t *destaddr)
 {
-    uint8_t *atyp = (uint8_t *)&buf->data[buf->len++];
-    uint8_t option = 0;
-    if (destaddr->id > 0) {
-        option = SSOCKS_OPT_ASSOC;
-        buf->data[buf->len++] = destaddr->id;
-    }
+    char  *dname     = destaddr->dname;
+    size_t dname_len = destaddr->dname_len;
 
-    if (destaddr->dname != NULL) {
-        *atyp = SSOCKS_ATYP_DOMAIN << option;
-        buf->data[buf->len++] = destaddr->dname_len > 0 ? destaddr->dname_len : strlen(destaddr->dname);
-        memcpy(buf->data + buf->len, destaddr->dname, destaddr->dname_len);
-        buf->len += destaddr->dname_len;
+    if (dname != NULL) {
+        buf->data[buf->len++] = SSOCKS_ATYP_DOMAIN;
+        buf->data[buf->len++] = dname_len > 0 ? dname_len : strlen(dname);
+        memcpy(buf->data + buf->len, dname, dname_len);
+        buf->len += dname_len;
         if (!destaddr->port
             && destaddr->addr != NULL)
         {
@@ -258,14 +245,14 @@ create_ssocks_header(buffer_t *buf, ssocks_addr_t *destaddr)
         struct sockaddr_storage *storage = destaddr->addr;
         switch (storage->ss_family) {
             case AF_INET: {
-                *atyp = SSOCKS_ATYP_IPV4 << option; // Type 1 is IPv4 address
+                buf->data[buf->len++] = SSOCKS_ATYP_IPV4; // Type 1 is IPv4 address
                 struct sockaddr_in *addr = (struct sockaddr_in *)storage;
                 memcpy(buf->data + buf->len, &addr->sin_addr, sizeof(struct in_addr));
                 buf->len += sizeof(struct in_addr);
                 destaddr->port = addr->sin_port;
             } break;
             case AF_INET6: {
-                *atyp = SSOCKS_ATYP_IPV6 << option; // Type 4 is IPv6 address
+                buf->data[buf->len++] = SSOCKS_ATYP_IPV6; // Type 4 is IPv6 address
                 struct sockaddr_in6 *addr = (struct sockaddr_in6 *)storage;
                 memcpy(buf->data + buf->len, &addr->sin6_addr, sizeof(struct in6_addr));
                 buf->len += sizeof(struct in6_addr);
