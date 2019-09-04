@@ -111,6 +111,7 @@ new_server(int fd)
     server->fd       = fd;
     server->recv_ctx = ss_calloc(1, sizeof(server_ctx_t));
     server->send_ctx = ss_calloc(1, sizeof(server_ctx_t));
+    server->buf      = new_buffer(SOCKET_BUF_SIZE);
 
     server->stage               = STAGE_INIT;
     server->recv_ctx->server    = server;
@@ -409,6 +410,7 @@ new_server(int fd, listen_ctx_t *listener)
     server->fd       = fd;
     server->recv_ctx = ss_calloc(1, sizeof(server_ctx_t));
     server->send_ctx = ss_calloc(1, sizeof(server_ctx_t));
+    server->buf      = new_buffer(SOCKET_BUF_SIZE);
 
     server->recv_ctx->server    = server;
     server->recv_ctx->connected = 0;
@@ -528,8 +530,8 @@ create_remote(EV_P_ remote_t *remote,
                 ERROR("fast_open_connect");
             }
         } else {
-            remote->buf->idx += s;
-            remote->buf->len -= s;
+            server->buf->idx += s;
+            server->buf->len -= s;
         }
     } else {
         int r = connect(remotefd, (struct sockaddr *)addr,
@@ -732,6 +734,10 @@ free_server(server_t *server)
 
     if (server->remote != NULL) {
         server->remote->server = NULL;
+    }
+    if (server->buf != NULL) {
+        bfree(server->buf);
+        ss_free(server->buf);
     }
     ss_free(server->recv_ctx);
     ss_free(server->send_ctx);

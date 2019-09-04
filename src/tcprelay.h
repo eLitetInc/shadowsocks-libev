@@ -70,6 +70,8 @@ typedef struct server {
     struct listen_ctx *listen_ctx;
     struct remote *remote;
 
+    buffer_t *buf;
+
 #ifdef MODULE_REMOTE
     int frag;
 
