@@ -236,11 +236,6 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
         return;
     }
 
-    if (server->stage == STAGE_INIT) {
-        crypto->ctx_init(crypto->cipher, server->e_ctx, 1);
-        crypto->ctx_init(crypto->cipher, server->d_ctx, 0);
-    }
-
     buf->len = r;
     int err = crypto->decrypt(buf, server->d_ctx, SOCKET_BUF_SIZE);
 
@@ -346,7 +341,7 @@ server_send_cb(EV_P_ ev_io *w, int revents)
         return;
     }
 
-    if (server->buf->len == 0) {
+    if (remote->buf->len == 0) {
         // close and free
         if (verbose) {
             LOGI("server_send closing the connection");
@@ -356,8 +351,8 @@ server_send_cb(EV_P_ ev_io *w, int revents)
         return;
     } else {
         // has data to send
-        ssize_t s = send(server->fd, server->buf->data + server->buf->idx,
-                         server->buf->len, 0);
+        ssize_t s = send(server->fd, remote->buf->data + remote->buf->idx,
+                         remote->buf->len, 0);
         if (s == -1) {
             if (errno != EAGAIN && errno != EWOULDBLOCK) {
                 ERROR("server_send_send");
@@ -366,20 +361,21 @@ server_send_cb(EV_P_ ev_io *w, int revents)
                 close_and_free_server(EV_A_ server);
             }
             return;
-        } else if (s < server->buf->len) {
+        } else if (s < remote->buf->len) {
             // partly sent, move memory, wait for the next time to send
-            server->buf->len -= s;
-            server->buf->idx += s;
+            remote->buf->len -= s;
+            remote->buf->idx += s;
             return;
         } else {
             // all sent out, wait for reading
-            server->buf->len = 0;
-            server->buf->idx = 0;
+            remote->buf->len = 0;
+            remote->buf->idx = 0;
             ev_io_stop(EV_A_ & server_send_ctx->io);
             if (remote != NULL) {
                 ev_io_start(EV_A_ & remote->recv_ctx->io);
             } else {
                 LOGE("invalid remote");
+                server->stage = STAGE_ERROR;
                 close_and_free_remote(EV_A_ remote);
                 close_and_free_server(EV_A_ server);
             }
@@ -404,7 +400,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
 
     ev_timer_again(EV_A_ & server->recv_ctx->watcher);
 
-    ssize_t r = recv(remote->fd, server->buf->data, SOCKET_BUF_SIZE, 0);
+    ssize_t r = recv(remote->fd, remote->buf->data, SOCKET_BUF_SIZE, 0);
 
     if (r == 0) {
         // connection closed
@@ -433,8 +429,8 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
         return;
     }
 
-    server->buf->len = r;
-    int err = crypto->encrypt(server->buf, server->e_ctx, SOCKET_BUF_SIZE);
+    remote->buf->len = r;
+    int err = crypto->encrypt(remote->buf, server->e_ctx, SOCKET_BUF_SIZE);
 
     if (err) {
         LOGE("invalid password or cipher");
@@ -446,12 +442,12 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
 #ifdef USE_NFCONNTRACK_TOS
     setTosFromConnmark(remote, server);
 #endif
-    int s = send(server->fd, server->buf->data, server->buf->len, 0);
+    int s = send(server->fd, remote->buf->data, remote->buf->len, 0);
 
     if (s == -1) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             // no data, wait for send
-            server->buf->idx = 0;
+            remote->buf->idx = 0;
             ev_io_stop(EV_A_ & remote_recv_ctx->io);
             ev_io_start(EV_A_ & server->send_ctx->io);
         } else {
@@ -461,9 +457,9 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
             close_and_free_server(EV_A_ server);
             return;
         }
-    } else if (s < server->buf->len) {
-        server->buf->len -= s;
-        server->buf->idx  = s;
+    } else if (s < remote->buf->len) {
+        remote->buf->len -= s;
+        remote->buf->idx  = s;
         ev_io_stop(EV_A_ & remote_recv_ctx->io);
         ev_io_start(EV_A_ & server->send_ctx->io);
     }

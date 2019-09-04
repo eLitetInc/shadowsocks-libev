@@ -153,15 +153,16 @@ server_send_cb(EV_P_ ev_io *w, int revents)
     server_ctx_t *server_send_ctx = (server_ctx_t *)w;
     server_t *server              = server_send_ctx->server;
     remote_t *remote              = server->remote;
-    if (server->buf->len == 0) {
+
+    if (remote->buf->len == 0) {
         // close and free
         close_and_free_remote(EV_A_ remote);
         close_and_free_server(EV_A_ server);
         return;
     } else {
         // has data to send
-        ssize_t s = send(server->fd, server->buf->data + server->buf->idx,
-                         server->buf->len, 0);
+        ssize_t s = send(server->fd, remote->buf->data + remote->buf->idx,
+                         remote->buf->len, 0);
         if (s == -1) {
             if (errno != EAGAIN && errno != EWOULDBLOCK) {
                 ERROR("send");
@@ -169,15 +170,15 @@ server_send_cb(EV_P_ ev_io *w, int revents)
                 close_and_free_server(EV_A_ server);
             }
             return;
-        } else if (s < server->buf->len) {
+        } else if (s < remote->buf->len) {
             // partly sent, move memory, wait for the next time to send
-            server->buf->len -= s;
-            server->buf->idx += s;
+            remote->buf->len -= s;
+            remote->buf->idx += s;
             return;
         } else {
             // all sent out, wait for reading
-            server->buf->len = 0;
-            server->buf->idx = 0;
+            remote->buf->len = 0;
+            remote->buf->idx = 0;
             ev_io_stop(EV_A_ & server_send_ctx->io);
             ev_io_start(EV_A_ & remote->recv_ctx->io);
         }
@@ -191,7 +192,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
     remote_t *remote              = remote_recv_ctx->remote;
     server_t *server              = remote->server;
 
-    ssize_t r = recv(remote->fd, server->buf->data, SOCKET_BUF_SIZE, 0);
+    ssize_t r = recv(remote->fd, remote->buf->data, SOCKET_BUF_SIZE, 0);
 
     if (r == 0) {
         // connection closed
@@ -212,11 +213,11 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
         }
     }
 
-    server->buf->len = r;
+    remote->buf->len = r;
 
     if (remote->crypto) {
         crypto_t *crypto = remote->crypto;
-        int err = crypto->decrypt(server->buf, remote->d_ctx, SOCKET_BUF_SIZE);
+        int err = crypto->decrypt(remote->buf, remote->d_ctx, SOCKET_BUF_SIZE);
         if (err == CRYPTO_ERROR) {
             LOGE("invalid password or cipher");
             close_and_free_remote(EV_A_ remote);
@@ -227,12 +228,12 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
         }
     }
 
-    int s = send(server->fd, server->buf->data, server->buf->len, 0);
+    int s = send(server->fd, remote->buf->data, remote->buf->len, 0);
 
     if (s == -1) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             // no data, wait for send
-            server->buf->idx = 0;
+            remote->buf->idx = 0;
             ev_io_stop(EV_A_ & remote_recv_ctx->io);
             ev_io_start(EV_A_ & server->send_ctx->io);
         } else {
@@ -241,9 +242,9 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
             close_and_free_server(EV_A_ server);
             return;
         }
-    } else if (s < server->buf->len) {
-        server->buf->len -= s;
-        server->buf->idx  = s;
+    } else if (s < remote->buf->len) {
+        remote->buf->len -= s;
+        remote->buf->idx  = s;
         ev_io_stop(EV_A_ & remote_recv_ctx->io);
         ev_io_start(EV_A_ & server->send_ctx->io);
     }
