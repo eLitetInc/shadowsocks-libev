@@ -164,7 +164,6 @@ server_send_cb(EV_P_ ev_io *w, int revents)
         // close and free
         close_and_free_remote(EV_A_ remote);
         close_and_free_server(EV_A_ server);
-        return;
     } else {
         // has data to send
         ssize_t s = send(server->fd, remote->buf->data + remote->buf->idx,
@@ -175,11 +174,9 @@ server_send_cb(EV_P_ ev_io *w, int revents)
                 close_and_free_remote(EV_A_ remote);
                 close_and_free_server(EV_A_ server);
             }
-            return;
         } else if (s < remote->buf->len) {
             // partly sent, move memory, wait for the next time to send
             remote->buf->idx += s;
-            return;
         } else {
             // all sent out, wait for reading
             remote->buf->len = 0;
@@ -307,7 +304,6 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
         // close and free
         close_and_free_remote(EV_A_ remote);
         close_and_free_server(EV_A_ server);
-        return;
     } else {
         // has data to send
         ssize_t s = sendto_remote(remote);

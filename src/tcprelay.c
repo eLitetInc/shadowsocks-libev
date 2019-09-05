@@ -167,8 +167,8 @@ sendto_remote(remote_t *remote)
         return -1;
     }
 
-    remote->addr = NULL;
-    remote->buf->idx += s;
+    if (fast_open)
+        remote->addr = NULL;
 
     return s;
 }
