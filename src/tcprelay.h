@@ -82,8 +82,6 @@ typedef struct server {
 #ifdef USE_NFCONNTRACK_TOS
     struct dscptracker *tracker;
 #endif
-#elif defined MODULE_REDIR
-    struct ssocks_addr *destaddr;
 #endif
 
     struct cork_dllist_item entries;

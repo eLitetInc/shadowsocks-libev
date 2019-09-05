@@ -172,7 +172,7 @@ resolv_cb(struct sockaddr *addr, void *data)
         LOGE("[udp] unable to resolve");
         close_and_free_remote(EV_A_ remote);
     } else {
-        int s = connect(remote->fd, addr, get_sockaddr_len(addr));
+        int s = connect(remote->fd, addr, sockaddr_len(addr));
 
         if (s == -1) {
             ERROR("connect");
@@ -180,7 +180,7 @@ resolv_cb(struct sockaddr *addr, void *data)
             return;
         }
 
-        s = send(remote->fd, query->buf->data + query->buf->idx, query->buf->len, 0);
+        s = send(remote->fd, query->buf->data + query->buf->idx, query->buf->len - query->buf->idx, 0);
         if (s == -1) {
             ERROR("[udp] sendto_remote");
             close_and_free_remote(EV_A_ remote);
@@ -222,7 +222,7 @@ create_tproxy(struct sockaddr_storage *destaddr)
 #endif
 
     if (bind(sourcefd, (struct sockaddr *)destaddr,
-             get_sockaddr_len((struct sockaddr *)destaddr)) != 0)
+             sockaddr_len((struct sockaddr *)destaddr)) != 0)
     {
         ERROR("[udp] remote_recv_bind");
         close(sourcefd);
@@ -475,7 +475,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
 #endif
 
     int s = sendto(remote->sfd, buf->data, buf->len, 0,
-                   remote->saddr, get_sockaddr_len(remote->saddr));
+                   remote->saddr, sockaddr_len(remote->saddr));
 
     if (s == -1) {
         ERROR("[udp] remote_recv_sendto");
@@ -594,7 +594,6 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
     }
 
     tx += buf->len;
-    buf->len -= offset;
     buf->idx += offset;
 
     if (verbose && buf->len > packet_size) {
@@ -693,7 +692,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             case PORT_HTTP_SERVICE:
             case PORT_HTTPS_SERVICE: {
                 /*destaddr->dname_len =
-                    gquic_hostname(buf->data + buf->idx, buf->len, &destaddr->dname);*/
+                    gquic_hostname(buf->data + buf->idx, buf->len - buf->idx, &destaddr->dname);*/
             } break;
         }
     }
@@ -763,7 +762,7 @@ bailed: {
         goto CLEAN_UP;
     }
 
-    s = send(remote->fd, buf->data + buf->idx, buf->len, 0);
+    s = send(remote->fd, buf->data + buf->idx, buf->len - buf->idx, 0);
     if (s == -1) {
         ERROR("[udp] server_recv_sendto");
         close_and_free_remote(EV_A_ remote);

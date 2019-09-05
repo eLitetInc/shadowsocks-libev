@@ -36,7 +36,6 @@
 
 #include "crypto.h"
 #include "jconf.h"
-#include "shadowsocks.h"
 
 #if defined MODULE_SOCKS  || \
     defined MODULE_TUNNEL || \

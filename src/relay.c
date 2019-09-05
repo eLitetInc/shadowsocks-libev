@@ -105,7 +105,7 @@ create_and_bind(struct sockaddr_storage *storage,
 #endif
     }
 
-    int s = bind(fd, (struct sockaddr *)storage, get_sockaddr_len((struct sockaddr *)storage));
+    int s = bind(fd, (struct sockaddr *)storage, sockaddr_len((struct sockaddr *)storage));
     if (s == 0) {
         return fd;
     } else {

@@ -204,13 +204,16 @@ char mptcp_enabled_values[] =
             if (addr.s6_addr[i]) break;                         \
         }
 
+#define sockaddr_len(addr) \
+    (addr)->sa_family == AF_INET  ? sizeof(struct sockaddr_in)  :    \
+    (addr)->sa_family == AF_INET6 ? sizeof(struct sockaddr_in6) : 0
+
+#define sockaddr_port(addr) \
+    (addr)->sa_family == AF_INET  ? ((struct sockaddr_in *)(addr))->sin_port   :    \
+    (addr)->sa_family == AF_INET6 ? ((struct sockaddr_in6 *)(addr))->sin6_port : 0
 
 #define get_sockaddr(node, service, storage, resolv, ipv6first) \
         get_sockaddr_r(node, service, 0, storage, resolv, ipv6first)
-
-#define get_sockaddr_len(addr) \
-    (addr)->sa_family == AF_INET  ? sizeof(struct sockaddr_in)  :    \
-    (addr)->sa_family == AF_INET6 ? sizeof(struct sockaddr_in6) : 0
 
 int get_sockaddr_r(const char *, const char *,
                    uint16_t, struct sockaddr_storage *, int, int);

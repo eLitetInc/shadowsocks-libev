@@ -150,7 +150,8 @@ sendto_remote(remote_t *remote)
 {
     ssize_t s = sendto_idempotent(remote->fd,
                                   remote->buf->data + remote->buf->idx,
-                                  remote->buf->len, (struct sockaddr *)remote->addr
+                                  remote->buf->len  - remote->buf->idx,
+                                  (struct sockaddr *)remote->addr
 #ifdef TCP_FASTOPEN_WINSOCK
                                   , &remote->olap, &remote->connect_ex_done
 #endif
@@ -167,7 +168,6 @@ sendto_remote(remote_t *remote)
     }
 
     remote->addr = NULL;
-    remote->buf->len -= s;
     remote->buf->idx += s;
 
     return s;
@@ -181,14 +181,17 @@ create_remote(EV_P_ remote_t *remote, buffer_t *buf,
     listen_ctx_t *listen_ctx = server->listen_ctx;
 
     if (buf != NULL && remote_dns && !destaddr->dname) {
-        switch (port_service(destaddr->port)) {
+        switch (port_service(
+            elvis(destaddr->port,
+                  sockaddr_port((struct sockaddr *)destaddr->addr))))
+        {
             case PORT_HTTP_SERVICE: {
                 destaddr->dname_len =
-                    http_hostname(buf->data + buf->idx, buf->len, &destaddr->dname);
+                    http_hostname(buf->data + buf->idx, buf->len - buf->idx, &destaddr->dname);
             } break;
             case PORT_HTTPS_SERVICE: {
                 destaddr->dname_len =
-                    tls_hostname(buf->data + buf->idx, buf->len, &destaddr->dname);
+                    tls_hostname(buf->data + buf->idx, buf->len - buf->idx, &destaddr->dname);
             } break;
             default:
                 break;
@@ -222,7 +225,7 @@ bailed: {
 
         buffer_t *abuf = new_buffer(SSOCKS_HDR_SIZE);
         create_ssocks_header(abuf, destaddr);
-        bprepend(remote->buf, abuf, SOCKET_BUF_SIZE);
+        bprepend(buf, abuf, SOCKET_BUF_SIZE);
         free_buffer(abuf);
 
         return init_remote(EV_A_ remote, listen_ctx->remotes[remote_idx]);
@@ -346,7 +349,6 @@ remote_connected(remote_t *remote)
             // Non-blocking way to fetch ConnectEx result
             if (WSAGetOverlappedResult(remote->fd, &remote->olap,
                                        &numBytes, FALSE, &flags)) {
-                remote->buf->len -= numBytes;
                 remote->buf->idx += numBytes;
                 remote->connect_ex_done = 1;
             } else if (WSAGetLastError() == WSA_IO_INCOMPLETE) {
@@ -511,7 +513,7 @@ create_remote(EV_P_ remote_t *remote,
     if (fast_open) {
         ssize_t s = sendto_idempotent(remote->fd,
                                       remote->buf->data + remote->buf->idx,
-                                      remote->buf->len, (struct sockaddr *)remote->addr
+                                      remote->buf->len  - remote->buf->idx, (struct sockaddr *)remote->addr
 #ifdef TCP_FASTOPEN_WINSOCK
                                       , &remote->olap, &remote->connect_ex_done
 #endif
@@ -531,11 +533,10 @@ create_remote(EV_P_ remote_t *remote,
             }
         } else {
             server->buf->idx += s;
-            server->buf->len -= s;
         }
     } else {
         int r = connect(remotefd, (struct sockaddr *)addr,
-                        get_sockaddr_len((struct sockaddr *)addr));
+                        sockaddr_len((struct sockaddr *)addr));
 
         if (r == -1 && errno != CONNECT_IN_PROGRESS) {
             ERROR("connect");
@@ -623,7 +624,7 @@ stat_update_cb(EV_P_ ev_timer *watcher, int revents)
         }
 
         if (sendto(sfd, resp, strlen(resp) + 1, 0, (struct sockaddr *)&storage,
-                   get_sockaddr_len((struct sockaddr *)&storage)) != msgLen) {
+                   sockaddr_len((struct sockaddr *)&storage)) != msgLen) {
             ERROR("stat_sendto");
             close(sfd);
             return;

@@ -236,7 +236,7 @@ sendto_idempotent(int fd, const void *buf, size_t len,
         // Call ConnectEx to send data
         *connect_ex_done = 0;
         memset(olap, 0, sizeof(*olap));
-        if (ConnectEx(fd, addr, get_sockaddr_len(addr),
+        if (ConnectEx(fd, addr, sockaddr_len(addr),
                       buf, len, &s, &olap)) {
             *connect_ex_done = 1;
             break;
@@ -255,7 +255,7 @@ sendto_idempotent(int fd, const void *buf, size_t len,
     sa_endpoints_t endpoints;
     memset((char *)&endpoints, 0, sizeof(endpoints));
     endpoints.sae_dstaddr    = addr;
-    endpoints.sae_dstaddrlen = get_sockaddr_len(addr);
+    endpoints.sae_dstaddrlen = sockaddr_len(addr);
     s                        = connectx(fd, &endpoints, SAE_ASSOCID_ANY,
                                         CONNECT_RESUME_ON_READ_WRITE | CONNECT_DATA_IDEMPOTENT,
                                         NULL, 0, NULL, NULL);
@@ -266,11 +266,11 @@ sendto_idempotent(int fd, const void *buf, size_t len,
     if (setsockopt(fd, IPPROTO_TCP, TCP_FASTOPEN_CONNECT,
                     (void *)&optval, sizeof(optval)) < 0)
         FATAL("failed to set TCP_FASTOPEN_CONNECT");
-    s = connect(fd, addr, get_sockaddr_len(addr));
+    s = connect(fd, addr, sockaddr_len(addr));
     if (s == 0)
         s = send(fd, buf, len, 0);
 #elif MSG_FASTOPEN
-    s = sendto(fd, buf, len, MSG_FASTOPEN, addr, get_sockaddr_len(addr));
+    s = sendto(fd, buf, len, MSG_FASTOPEN, addr, sockaddr_len(addr));
 #else
     FATAL("tcp fast open is not supported on this platform");
 #endif

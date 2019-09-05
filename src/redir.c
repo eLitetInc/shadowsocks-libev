@@ -84,12 +84,22 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
     remote->buf->len += r;
 
     if (!remote->send_ctx->connected) {
-        int r = create_remote(EV_A_ remote, remote->buf,
-                              server->destaddr, acl);
+        ssocks_addr_t destaddr = {
+            .addr = &(struct sockaddr_storage){}
+        };
+
+        if (getdestaddr(server->fd, destaddr.addr)) {
+            ERROR("getdestaddr");
+            close_and_free_remote(EV_A_ remote);
+            close_and_free_server(EV_A_ server);
+            return;
+        }
+
+        int r = create_remote(EV_A_ remote, remote->buf, &destaddr, acl);
 
         if (r == -1) {
-            if (server->stage != STAGE_SNI
-                && server->destaddr->dname_len == -1)
+            if (server->stage != STAGE_SNI &&
+                destaddr.dname_len == -1)
             {
                 if (verbose)
                     LOGE("partial HTTP/s request detected");
@@ -134,13 +144,12 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             close_and_free_server(EV_A_ server);
         }
     } else if (s < remote->buf->len) {
-        remote->buf->len -= s;
         remote->buf->idx += s;
         ev_io_stop(EV_A_ & server_recv_ctx->io);
         ev_io_start(EV_A_ & remote->send_ctx->io);
     } else {
-        remote->buf->idx = 0;
         remote->buf->len = 0;
+        remote->buf->idx = 0;
     }
 }
 
@@ -159,7 +168,7 @@ server_send_cb(EV_P_ ev_io *w, int revents)
     } else {
         // has data to send
         ssize_t s = send(server->fd, remote->buf->data + remote->buf->idx,
-                         remote->buf->len, 0);
+                         remote->buf->len - remote->buf->idx, 0);
         if (s == -1) {
             if (errno != EAGAIN && errno != EWOULDBLOCK) {
                 ERROR("send");
@@ -169,7 +178,6 @@ server_send_cb(EV_P_ ev_io *w, int revents)
             return;
         } else if (s < remote->buf->len) {
             // partly sent, move memory, wait for the next time to send
-            remote->buf->len -= s;
             remote->buf->idx += s;
             return;
         } else {
@@ -240,7 +248,6 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
             return;
         }
     } else if (s < remote->buf->len) {
-        remote->buf->len -= s;
         remote->buf->idx += s;
         ev_io_stop(EV_A_ & remote_recv_ctx->io);
         ev_io_start(EV_A_ & server->send_ctx->io);
@@ -313,13 +320,10 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
                 close_and_free_remote(EV_A_ remote);
                 close_and_free_server(EV_A_ server);
             }
-            return;
         } else if (s < remote->buf->len) {
             // partly sent, move memory, wait for the next time to send
-            remote->buf->len -= s;
             remote->buf->idx += s;
             ev_io_start(EV_A_ & remote_send_ctx->io);
-            return;
         } else {
             // all sent out, wait for reading
             remote->buf->len = 0;
@@ -340,39 +344,17 @@ accept_cb(EV_P_ ev_io *w, int revents)
         ERROR("accept");
         return;
     }
-    setnonblocking(serverfd);
-
-    server_t *server   = new_server(serverfd);
-    server->listen_ctx = listener;
-    server->destaddr   = ss_calloc(1, sizeof(*server->destaddr));
-    server->destaddr->addr = ss_calloc(1, sizeof(*server->destaddr->addr));
-    if (getdestaddr(serverfd, server->destaddr->addr)) {
-        ERROR("getdestaddr");
-        close_and_free_server(EV_A_ server);
-        return;
-    }
-
-    // cara TODO refinement socks header struct
-    if (!server->destaddr->port
-        && server->destaddr->addr != NULL)
-    {
-        switch (server->destaddr->addr->ss_family) {
-            case AF_INET:
-                server->destaddr->port = ((struct sockaddr_in *)server->destaddr->addr)->sin_port;
-                break;
-            case AF_INET6:
-                server->destaddr->port = ((struct sockaddr_in6 *)server->destaddr->addr)->sin6_port;
-                break;
-        }
-    }
 
     int opt = 1;
     setsockopt(serverfd, SOL_TCP, TCP_NODELAY, &opt, sizeof(opt));
 #ifdef SO_NOSIGPIPE
     setsockopt(serverfd, SOL_SOCKET, SO_NOSIGPIPE, &opt, sizeof(opt));
 #endif
+    setnonblocking(serverfd);
 
-    server->remote = new_remote(server);
+    server_t *server   = new_server(serverfd);
+    server->listen_ctx = listener;
+    server->remote     = new_remote(server);
     ev_io_start(EV_A_ & server->recv_ctx->io);
 }
 
