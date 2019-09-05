@@ -594,6 +594,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
     }
 
     tx += buf->len;
+    buf->len -= offset;
     buf->idx += offset;
 
     if (verbose && buf->len > packet_size) {
@@ -692,7 +693,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             case PORT_HTTP_SERVICE:
             case PORT_HTTPS_SERVICE: {
                 /*destaddr->dname_len =
-                    gquic_hostname(buf->data + buf->idx, buf->len - buf->idx, &destaddr->dname);*/
+                    gquic_hostname(buf->data + buf->idx, buf->len, &destaddr->dname);*/
             } break;
         }
     }
@@ -762,7 +763,7 @@ bailed: {
         goto CLEAN_UP;
     }
 
-    s = send(remote->fd, buf->data + buf->idx, buf->len - buf->idx, 0);
+    s = send(remote->fd, buf->data + buf->idx, buf->len, 0);
     if (s == -1) {
         ERROR("[udp] server_recv_sendto");
         close_and_free_remote(EV_A_ remote);

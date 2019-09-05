@@ -150,12 +150,15 @@ sendto_remote(remote_t *remote)
 {
     ssize_t s = sendto_idempotent(remote->fd,
                                   remote->buf->data + remote->buf->idx,
-                                  remote->buf->len  - remote->buf->idx,
+                                  remote->buf->len,
                                   (struct sockaddr *)remote->addr
 #ifdef TCP_FASTOPEN_WINSOCK
                                   , &remote->olap, &remote->connect_ex_done
 #endif
     );
+
+    if (remote->addr)
+        remote->addr = NULL;
 
     if (s == -1 && errno != CONNECT_IN_PROGRESS) {
         if (errno == EOPNOTSUPP || errno == EPROTONOSUPPORT ||
@@ -164,11 +167,7 @@ sendto_remote(remote_t *remote)
             fast_open = 0;  // just turn it off
             LOGE("fast open not supported on this platform");
         }
-        return -1;
     }
-
-    if (fast_open)
-        remote->addr = NULL;
 
     return s;
 }
@@ -187,11 +186,11 @@ create_remote(EV_P_ remote_t *remote, buffer_t *buf,
         {
             case PORT_HTTP_SERVICE: {
                 destaddr->dname_len =
-                    http_hostname(buf->data + buf->idx, buf->len - buf->idx, &destaddr->dname);
+                    http_hostname(buf->data + buf->idx, buf->len, &destaddr->dname);
             } break;
             case PORT_HTTPS_SERVICE: {
                 destaddr->dname_len =
-                    tls_hostname(buf->data + buf->idx, buf->len - buf->idx, &destaddr->dname);
+                    tls_hostname(buf->data + buf->idx, buf->len, &destaddr->dname);
             } break;
             default:
                 break;
@@ -349,6 +348,7 @@ remote_connected(remote_t *remote)
             // Non-blocking way to fetch ConnectEx result
             if (WSAGetOverlappedResult(remote->fd, &remote->olap,
                                        &numBytes, FALSE, &flags)) {
+                remote->buf->len -= numBytes;
                 remote->buf->idx += numBytes;
                 remote->connect_ex_done = 1;
             } else if (WSAGetLastError() == WSA_IO_INCOMPLETE) {
@@ -513,7 +513,7 @@ create_remote(EV_P_ remote_t *remote,
     if (fast_open) {
         ssize_t s = sendto_idempotent(remote->fd,
                                       remote->buf->data + remote->buf->idx,
-                                      remote->buf->len  - remote->buf->idx, (struct sockaddr *)remote->addr
+                                      remote->buf->len, (struct sockaddr *)remote->addr
 #ifdef TCP_FASTOPEN_WINSOCK
                                       , &remote->olap, &remote->connect_ex_done
 #endif
@@ -532,6 +532,7 @@ create_remote(EV_P_ remote_t *remote,
                 ERROR("fast_open_connect");
             }
         } else {
+            server->buf->len -= s;
             server->buf->idx += s;
         }
     } else {

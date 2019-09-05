@@ -144,6 +144,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             close_and_free_server(EV_A_ server);
         }
     } else if (s < remote->buf->len) {
+        remote->buf->len -= s;
         remote->buf->idx += s;
         ev_io_stop(EV_A_ & server_recv_ctx->io);
         ev_io_start(EV_A_ & remote->send_ctx->io);
@@ -167,7 +168,7 @@ server_send_cb(EV_P_ ev_io *w, int revents)
     } else {
         // has data to send
         ssize_t s = send(server->fd, remote->buf->data + remote->buf->idx,
-                         remote->buf->len - remote->buf->idx, 0);
+                         remote->buf->len, 0);
         if (s == -1) {
             if (errno != EAGAIN && errno != EWOULDBLOCK) {
                 ERROR("send");
@@ -176,6 +177,7 @@ server_send_cb(EV_P_ ev_io *w, int revents)
             }
         } else if (s < remote->buf->len) {
             // partly sent, move memory, wait for the next time to send
+            remote->buf->len -= s;
             remote->buf->idx += s;
         } else {
             // all sent out, wait for reading
@@ -245,6 +247,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
             return;
         }
     } else if (s < remote->buf->len) {
+        remote->buf->len -= s;
         remote->buf->idx += s;
         ev_io_stop(EV_A_ & remote_recv_ctx->io);
         ev_io_start(EV_A_ & server->send_ctx->io);
@@ -318,6 +321,7 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
             }
         } else if (s < remote->buf->len) {
             // partly sent, move memory, wait for the next time to send
+            remote->buf->len -= s;
             remote->buf->idx += s;
             ev_io_start(EV_A_ & remote_send_ctx->io);
         } else {

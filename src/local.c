@@ -297,13 +297,14 @@ server_stream(EV_P_ ev_io *w, buffer_t *buf)
                 return;
             }
         } else if (s < (int)(remote->buf->len)) {
+            remote->buf->len -= s;
             remote->buf->idx += s;
             ev_io_stop(EV_A_ & server_recv_ctx->io);
             ev_io_start(EV_A_ & remote->send_ctx->io);
             return;
         } else {
-            remote->buf->idx = 0;
             remote->buf->len = 0;
+            remote->buf->idx = 0;
         }
     }
 }
@@ -414,7 +415,7 @@ server_send_cb(EV_P_ ev_io *w, int revents)
     } else {
         // has data to send
         ssize_t s = send(server->fd, server->buf->data + server->buf->idx,
-                         server->buf->len - server->buf->idx, 0);
+                         server->buf->len, 0);
         if (s == -1) {
             if (errno != EAGAIN && errno != EWOULDBLOCK) {
                 ERROR("server_send_cb_send");
@@ -424,6 +425,7 @@ server_send_cb(EV_P_ ev_io *w, int revents)
             return;
         } else if (s < (ssize_t)(server->buf->len)) {
             // partly sent, move memory, wait for the next time to send
+            server->buf->len -= s;
             server->buf->idx += s;
             return;
         } else {
@@ -513,7 +515,8 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
             return;
         }
     } else if (s < (int)(server->buf->len)) {
-        server->buf->idx  = s;
+        server->buf->len -= s;
+        server->buf->idx += s;
         ev_io_stop(EV_A_ & remote_recv_ctx->io);
         ev_io_start(EV_A_ & server->send_ctx->io);
     }
@@ -567,7 +570,7 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
     } else {
         // has data to send
         ssize_t s = send(remote->fd, remote->buf->data + remote->buf->idx,
-                         remote->buf->len - remote->buf->idx, 0);
+                         remote->buf->len, 0);
         if (s == -1) {
             if (errno != EAGAIN && errno != EWOULDBLOCK) {
                 ERROR("remote_send_cb_send");
@@ -579,6 +582,7 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
             return;
         } else if (s < (ssize_t)(remote->buf->len)) {
             // partly sent, move memory, wait for the next time to send
+            remote->buf->len -= s;
             remote->buf->idx += s;
             return;
         } else {
