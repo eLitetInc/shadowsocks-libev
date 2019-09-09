@@ -146,7 +146,7 @@ resolv_cb(struct sockaddr *addr, void *data)
             return;
         }
 
-        s = send(remote->fd, query->buf->data + query->buf->idx, query->buf->len - query->buf->idx, 0);
+        s = send(remote->fd, query->buf->data + query->buf->idx, query->buf->len, 0);
         if (s == -1) {
             ERROR("[udp] sendto_remote");
             close_and_free_remote(EV_A_ remote);
