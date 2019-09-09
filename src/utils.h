@@ -305,13 +305,13 @@ currtime_readable()
         cork_array_append(dst, cork_array_at(src, i));  \
     }
 
-#define cork_dllist_popfront(dst, T, entries) ({            \
-    struct cork_dllist_item *i = cork_dllist_head(dst);     \
-    if (i != NULL) {                                        \
-        T *element = cork_container_of(i, T, (entries));    \
-        cork_dllist_remove(&element->(entries));            \
-        element;                                            \
-    } else NULL;                                            \
+#define cork_dllist_popfront(dst, T, entries, remove) ({     \
+    struct cork_dllist_item *i = cork_dllist_head(dst);      \
+    if (i != NULL) {                                         \
+        T *element = cork_container_of(i, (T), (entries));     \
+        if (remove) cork_dllist_remove(&element->(entries)); \
+        element;                                             \
+    } else NULL;                                             \
 })
 
 #define cork_dllist_each(dst, element, T, entries)  \

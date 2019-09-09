@@ -306,3 +306,18 @@ cache_insert(struct cache *cache, void *key, size_t key_len, void *value)
 
     return 0;
 }
+
+void *
+cache_popfront(struct cache *cache, bool keyval)
+{
+    if (cache == NULL)
+        return NULL;
+
+    struct cache_entry *element = cache->entries;
+    if (element != NULL) {
+        HASH_DEL(cache->entries, element);
+        return keyval ? element->key : element->value;
+    }
+
+    return NULL;
+}

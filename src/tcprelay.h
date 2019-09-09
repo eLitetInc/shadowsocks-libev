@@ -35,88 +35,8 @@
 #include "shadowsocks.h"
 #include "crypto.h"
 #include "jconf.h"
+#define MODULE_CTX_TCP
 #include "relay.h"
-
-#ifdef MODULE_REMOTE
-#include "resolv.h"
-#ifdef USE_NFCONNTRACK_TOS
-#include <libnetfilter_conntrack/libnetfilter_conntrack.h>
-#include <libnetfilter_conntrack/libnetfilter_conntrack_tcp.h>
-
-struct dscptracker {
-    struct nf_conntrack *ct;
-    long unsigned int mark;
-    unsigned int dscp;
-    unsigned int packet_count;
-};
-#endif
-#endif
-
-typedef struct server_ctx {
-    ev_io io;
-#ifdef MODULE_REMOTE
-    ev_timer watcher;
-#endif
-    int connected;
-    struct server *server;
-} server_ctx_t;
-
-typedef struct server {
-    int fd;
-    int stage;
-
-    struct server_ctx *recv_ctx;
-    struct server_ctx *send_ctx;
-    struct listen_ctx *listen_ctx;
-    struct remote *remote;
-
-    buffer_t *buf;
-
-#ifdef MODULE_REMOTE
-    int frag;
-
-    crypto_t *crypto;
-    cipher_ctx_t *e_ctx;
-    cipher_ctx_t *d_ctx;
-
-#ifdef USE_NFCONNTRACK_TOS
-    struct dscptracker *tracker;
-#endif
-#endif
-
-    struct cork_dllist_item entries;
-} server_t;
-
-typedef struct remote_ctx {
-    ev_io io;
-#ifdef MODULE_LOCAL
-    ev_timer watcher;
-#endif
-    int connected;
-    struct remote *remote;
-} remote_ctx_t;
-
-typedef struct remote {
-    int fd;
-#ifdef TCP_FASTOPEN_WINSOCK
-    OVERLAPPED olap;
-    int connect_ex_done;
-#endif
-
-    buffer_t *buf;
-
-#ifdef MODULE_LOCAL
-    crypto_t *crypto;
-    cipher_ctx_t *e_ctx;
-    cipher_ctx_t *d_ctx;
-#endif
-
-    struct remote_ctx *recv_ctx;
-    struct remote_ctx *send_ctx;
-    struct server *server;
-    struct sockaddr_storage *addr;
-    struct cache *sockets;
-} remote_t;
 
 enum {
     STAGE_ERROR   = -1, /* Error detected                   */
@@ -130,36 +50,33 @@ enum {
     STAGE_IDLE          /* Server ready to be reused        */
 };
 
-void accept_cb(EV_P_ ev_io *, int);
-void server_recv_cb(EV_P_ ev_io *, int);
-void server_send_cb(EV_P_ ev_io *, int);
-void remote_recv_cb(EV_P_ ev_io *, int);
-void remote_send_cb(EV_P_ ev_io *, int);
+remote_t *new_remote(server_t *);
+server_t *new_server(int, listen_ctx_t *);
+
+ev_io_callback accept_cb,
+    server_recv_cb, server_send_cb,
+    remote_recv_cb, remote_send_cb;
 
 void free_remote(remote_t *remote);
 void close_and_free_remote(EV_P_ remote_t *remote);
 void free_server(server_t *server);
 void close_and_free_server(EV_P_ server_t *server);
 
-remote_t *new_remote(server_t *server);
 #ifdef MODULE_REMOTE
-server_t *new_server(int fd, listen_ctx_t *listener);
-void server_timeout_cb(EV_P_ ev_timer *watcher, int revents);
-int create_remote(EV_P_ remote_t *remote, struct sockaddr_storage *addr);
+ev_timer_callback server_timeout_cb;
+void server_timeout_cb(EV_P_ ev_timer *, int);
+int create_remote(EV_P_ remote_t *, struct sockaddr_storage *);
 #elif defined MODULE_LOCAL
-server_t *new_server(int fd);
-void remote_timeout_cb(EV_P_ ev_timer *watcher, int revents);
-int sendto_remote(remote_t *remote);
-int init_remote(EV_P_ remote_t *remote, remote_cnf_t *conf);
-int create_remote(EV_P_ remote_t *remote, buffer_t *buf,
-                  ssocks_addr_t *destaddr, int acl_enabled);
-int remote_connected(remote_t *remote);
+ev_timer_callback remote_timeout_cb;
+int sendto_remote(remote_t *, buffer_t *);
+int remote_connected(remote_t *);
+remote_t *create_remote(EV_P_ server_t *, buffer_t *,
+                              ssocks_addr_t *, int);
 #endif
 
-int start_relay(jconf_t *conf,
-                ss_callback_t callback, void *data);
+int start_relay(jconf_t *, ss_callback_t, void *);
 
-void init_udprelay(EV_P_ listen_ctx_t *listener);
-void free_udprelay(struct ev_loop *loop);
+void init_udprelay(EV_P_ listen_ctx_t *);
+void free_udprelay(struct ev_loop *);
 
 #endif // _RELAY_H

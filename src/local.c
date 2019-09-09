@@ -81,19 +81,20 @@ server_handshake_reply(EV_P_ ev_io *w, int udp_assc, struct socks5_response *res
 {
     server_ctx_t *server_recv_ctx = (server_ctx_t *)w;
     server_t *server              = server_recv_ctx->server;
-    remote_t *remote              = server->remote;
+
     if (server->stage != STAGE_HANDSHAKE)
         return 0;
 
     struct sockaddr_in sock_addr = {};
     if (udp_assc) {
-        if (getsockname(server->fd, (struct sockaddr *)&sock_addr, &(socklen_t) { sizeof(sock_addr) }) < 0) {
+        if (getsockname(server->fd, (struct sockaddr *)&sock_addr,
+                        &(socklen_t) { sizeof(sock_addr) }) < 0)
+        {
             ERROR("getsockname");
             response->rep = SOCKS5_REP_CONN_REFUSED;
             send(server->fd, response, sizeof(*response), 0);
 
             server->stage = STAGE_ERROR;
-            close_and_free_remote(EV_A_ remote);
             close_and_free_server(EV_A_ server);
             return -1;
         }
@@ -120,7 +121,6 @@ server_handshake_reply(EV_P_ ev_io *w, int udp_assc, struct socks5_response *res
     if (s < reply_size) {
         LOGE("failed to send fake reply");
         server->stage = STAGE_ERROR;
-        close_and_free_remote(EV_A_ remote);
         close_and_free_server(EV_A_ server);
         return -1;
     }
@@ -136,7 +136,6 @@ server_handshake(EV_P_ ev_io *w, buffer_t *buf)
 {
     server_ctx_t *server_recv_ctx = (server_ctx_t *)w;
     server_t *server              = server_recv_ctx->server;
-    remote_t *remote              = server->remote;
 
     struct socks5_request *request = (struct socks5_request *)buf->data;
     if (buf->len < sizeof(*request)) {
@@ -150,7 +149,6 @@ server_handshake(EV_P_ ev_io *w, buffer_t *buf)
         .atyp = SOCKS5_ATYP_IPV4
     };
 
-    // TODO fixme BUGS ALERT
     if (request->cmd == SOCKS5_CMD_UDP_ASSOCIATE) {
         if (verbose) {
             LOGI("udp assc request accepted");
@@ -162,7 +160,6 @@ server_handshake(EV_P_ ev_io *w, buffer_t *buf)
         send(server->fd, &response, sizeof(response), 0);
 
         server->stage = STAGE_ERROR;
-        close_and_free_remote(EV_A_ remote);
         close_and_free_server(EV_A_ server);
         return -1;
     }
@@ -175,24 +172,26 @@ server_handshake(EV_P_ ev_io *w, buffer_t *buf)
         send(server->fd, &response, sizeof(response), 0);
 
         server->stage = STAGE_ERROR;
-        close_and_free_remote(EV_A_ remote);
         close_and_free_server(EV_A_ server);
         return -1;
-    } else {
-        buf->len -= offset;
-        if (buf->len > 0) {
-            memmove(buf->data, buf->data + offset, buf->len);
-        }
     }
 
-    int acl_eligible = (acl
+    buf->len -= offset;
+    buf->idx += offset;
+
+    remote_t *remote =
+        create_remote(EV_A_ server, buf, &destaddr, acl
 #ifdef __ANDROID__
         && !(vpn && port_service(destaddr.port) == PORT_DOMAIN_SERVICE)
 #endif
         );
-    int r = create_remote(EV_A_ remote, buf, &destaddr, acl_eligible);
 
-    if (r == -1) {
+    if (remote != NULL) {
+        server->remote = remote;
+        if (server_handshake_reply(EV_A_ w, 0, &response) < 0)
+            return -1;
+        server->stage = STAGE_STREAM;
+    } else {
         if (server->stage != STAGE_SNI
             && buf->len < SOCKET_BUF_SIZE) {
             if (server_handshake_reply(EV_A_ w, 0, &response) == 0) {
@@ -201,25 +200,17 @@ server_handshake(EV_P_ ev_io *w, buffer_t *buf)
             }
         } else {
             server->stage = STAGE_ERROR;
-            close_and_free_remote(EV_A_ remote);
             close_and_free_server(EV_A_ server);
         }
         return -1;
-    } else {
-        if (server_handshake_reply(EV_A_ w, 0, &response) < 0)
-            return -1;
-        server->stage = STAGE_STREAM;
     }
 
-    if (buf->len > 0) {
-        remote->buf->len = buf->len;
-        memcpy(remote->buf->data, buf->data, buf->len);
-        return 0;
-    } else {
+    if (buf->len <= 0) {
         ev_io_start(EV_A_ & server_recv_ctx->io);
+        return -1;
     }
 
-    return -1;
+    return 0;
 }
 
 static void
@@ -228,7 +219,6 @@ server_stream(EV_P_ ev_io *w, buffer_t *buf)
     server_ctx_t *server_recv_ctx = (server_ctx_t *)w;
     server_t *server              = server_recv_ctx->server;
     remote_t *remote              = server->remote;
-    crypto_t *crypto              = remote->crypto;
 
     if (remote == NULL) {
         LOGE("invalid remote");
@@ -239,9 +229,10 @@ server_stream(EV_P_ ev_io *w, buffer_t *buf)
     // insert shadowsocks header
     if (remote->crypto) {
 #ifdef __ANDROID__
-        tx += remote->buf->len;
+        tx += buf->len;
 #endif
-        int err = crypto->encrypt(remote->buf, remote->e_ctx, SOCKET_BUF_SIZE);
+        crypto_t *crypto = remote->crypto;
+        int err = crypto->encrypt(buf, remote->e_ctx, SOCKET_BUF_SIZE);
 
         if (err) {
             LOGE("invalid password or cipher");
@@ -252,25 +243,24 @@ server_stream(EV_P_ ev_io *w, buffer_t *buf)
     }
 
     if (!remote->send_ctx->connected) {
-        remote->buf->idx = 0;
+        buf->idx = 0;
 
         if (fast_open) {
-            ssize_t s = sendto_remote(remote);
+            ssize_t s = sendto_remote(remote, buf);
             if (s == -1) {
                 if (errno == CONNECT_IN_PROGRESS) {
                     // in progress, wait until connected
-                    remote->buf->idx = 0;
+                    buf->idx = 0;
                     ev_io_stop(EV_A_ & server_recv_ctx->io);
                     ev_io_start(EV_A_ & remote->send_ctx->io);
-                    return;
                 } else {
                     ERROR("send");
                     // close and free
                     server->stage = STAGE_ERROR;
                     close_and_free_remote(EV_A_ remote);
                     close_and_free_server(EV_A_ server);
-                    return;
                 }
+                return;
             }
         }
 
@@ -281,30 +271,27 @@ server_stream(EV_P_ ev_io *w, buffer_t *buf)
 
         return;
     } else {
-        int s = send(remote->fd, remote->buf->data, remote->buf->len, 0);
+        int s = send(remote->fd, buf->data, buf->len, 0);
         if (s == -1) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 // no data, wait for send
-                remote->buf->idx = 0;
+                buf->idx = 0;
                 ev_io_stop(EV_A_ & server_recv_ctx->io);
                 ev_io_start(EV_A_ & remote->send_ctx->io);
-                return;
             } else {
                 ERROR("server_recv_cb_send");
                 server->stage = STAGE_ERROR;
                 close_and_free_remote(EV_A_ remote);
                 close_and_free_server(EV_A_ server);
-                return;
             }
-        } else if (s < (int)(remote->buf->len)) {
-            remote->buf->len -= s;
-            remote->buf->idx += s;
+        } else if (s < (int)(buf->len)) {
+            buf->len -= s;
+            buf->idx += s;
             ev_io_stop(EV_A_ & server_recv_ctx->io);
             ev_io_start(EV_A_ & remote->send_ctx->io);
-            return;
         } else {
-            remote->buf->len = 0;
-            remote->buf->idx = 0;
+            buf->len = 0;
+            buf->idx = 0;
         }
     }
 }
@@ -315,7 +302,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
     server_ctx_t *server_recv_ctx = (server_ctx_t *)w;
     server_t *server = server_recv_ctx->server;
     remote_t *remote = server->remote;
-    buffer_t *buf    = remote ? remote->buf : server->buf;
+    buffer_t *buf    = server->buf;
 
     ssize_t r = recv(server->fd, buf->data + buf->len, SOCKET_BUF_SIZE - buf->len, 0);
 
@@ -382,12 +369,13 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                 server->stage = STAGE_HANDSHAKE;
 
                 if (method_len < buf->len) {
-                    memmove(buf->data, buf->data + method_len, buf->len - method_len);
                     buf->len -= method_len;
+                    buf->idx += method_len;
                     continue;
                 }
 
                 buf->len = 0;
+                buf->idx = 0;
             } return;
             case STAGE_HANDSHAKE:
             case STAGE_SNI:
@@ -407,6 +395,7 @@ server_send_cb(EV_P_ ev_io *w, int revents)
     server_ctx_t *server_send_ctx = (server_ctx_t *)w;
     server_t *server              = server_send_ctx->server;
     remote_t *remote              = server->remote;
+
     if (server->buf->len == 0) {
         // close and free
         close_and_free_remote(EV_A_ remote);
@@ -519,6 +508,9 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
         server->buf->idx += s;
         ev_io_stop(EV_A_ & remote_recv_ctx->io);
         ev_io_start(EV_A_ & server->send_ctx->io);
+    } else {
+        server->buf->len = 0;
+        server->buf->idx = 0;
     }
 
     // Disable TCP_NODELAY after the first response are sent
@@ -545,7 +537,7 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
             ev_io_start(EV_A_ & remote->recv_ctx->io);
 
             // no need to send any data
-            if (remote->buf->len == 0) {
+            if (server->buf->len == 0) {
                 ev_io_stop(EV_A_ & remote_send_ctx->io);
                 ev_io_start(EV_A_ & server->recv_ctx->io);
                 return;
@@ -562,15 +554,15 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
         }
     }
 
-    if (remote->buf->len == 0) {
+    if (server->buf->len == 0) {
         // close and free
         close_and_free_remote(EV_A_ remote);
         close_and_free_server(EV_A_ server);
         return;
     } else {
         // has data to send
-        ssize_t s = send(remote->fd, remote->buf->data + remote->buf->idx,
-                         remote->buf->len, 0);
+        ssize_t s = send(remote->fd, server->buf->data + server->buf->idx,
+                         server->buf->len, 0);
         if (s == -1) {
             if (errno != EAGAIN && errno != EWOULDBLOCK) {
                 ERROR("remote_send_cb_send");
@@ -579,16 +571,14 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
                 close_and_free_remote(EV_A_ remote);
                 close_and_free_server(EV_A_ server);
             }
-            return;
-        } else if (s < (ssize_t)(remote->buf->len)) {
+        } else if (s < (ssize_t)(server->buf->len)) {
             // partly sent, move memory, wait for the next time to send
-            remote->buf->len -= s;
-            remote->buf->idx += s;
-            return;
+            server->buf->len -= s;
+            server->buf->idx += s;
         } else {
             // all sent out, wait for reading
-            remote->buf->len = 0;
-            remote->buf->idx = 0;
+            server->buf->len = 0;
+            server->buf->idx = 0;
             ev_io_stop(EV_A_ & remote_send_ctx->io);
             ev_io_start(EV_A_ & server->recv_ctx->io);
         }
@@ -611,9 +601,7 @@ accept_cb(EV_P_ ev_io *w, int revents)
     setsockopt(serverfd, SOL_SOCKET, SO_NOSIGPIPE, &opt, sizeof(opt));
 #endif
 
-    server_t *server   = new_server(serverfd);
-    server->listen_ctx = listener;
-    server->remote     = new_remote(server);
+    server_t *server = new_server(serverfd, listener);
 
     ev_io_start(EV_A_ & server->recv_ctx->io);
 }

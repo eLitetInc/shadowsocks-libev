@@ -236,11 +236,6 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
         return;
     }
 
-    if (server->stage == STAGE_INIT) {
-        crypto->ctx_init(crypto->cipher, server->e_ctx, 1);
-        crypto->ctx_init(crypto->cipher, server->d_ctx, 0);
-    }
-
     buf->len = r;
     int err = crypto->decrypt(buf, server->d_ctx, SOCKET_BUF_SIZE);
 

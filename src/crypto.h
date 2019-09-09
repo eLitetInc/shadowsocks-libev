@@ -125,7 +125,7 @@ typedef struct crypto {
     void(*const ctx_release) (cipher_ctx_t *);
 } crypto_t;
 
-
+#define buffer_init(len) &(buffer_t) { .data = (char [(len)]){} }
 #define free_buffer(buf) { \
     bfree(buf);     \
     ss_free(buf);   \

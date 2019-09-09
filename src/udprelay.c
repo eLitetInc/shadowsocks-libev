@@ -71,42 +71,8 @@
 #include "hostname.h"
 #include "shadowsocks.h"
 #include "cache.h"
+#define MODULE_CTX_UDP
 #include "relay.h"
-
-#ifdef MODULE_REMOTE
-typedef struct query {
-    buffer_t *buf;
-    struct remote *remote;
-} query_t;
-#endif
-
-typedef struct server {
-    ev_io io;
-    int fd;
-
-    struct remote *remote;
-    struct listen_ctx *listen_ctx;
-
-    // socket pool/cache
-    struct cache *remotes;
-} server_t;
-
-typedef struct remote {
-    ev_io io;
-    ev_timer watcher;
-    int fd, sfd;
-
-#ifdef MODULE_LOCAL
-    crypto_t *crypto;
-#ifdef MODULE_SOCKS
-    buffer_t *abuf;
-#endif
-#endif
-
-    struct server *server;
-    struct cork_dllist_item entries;
-    struct sockaddr *saddr;
-} remote_t;
 
 static void server_recv_cb(EV_P_ ev_io *w, int revents);
 static void remote_recv_cb(EV_P_ ev_io *w, int revents);

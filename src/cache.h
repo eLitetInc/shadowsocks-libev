@@ -36,44 +36,30 @@
 #include <ev.h>
 #endif
 
+typedef void (*cache_free_cb)(void *, void *);
 /**
  * A cache entry
  */
 struct cache_entry {
-    void *key;         /**<The key */
-    void *value;       /**<Payload */
-    ev_tstamp ts;      /**<Timestamp */
-    UT_hash_handle hh; /**<Hash Handle for uthash */
+    void *key;         /**< Key         */
+    void *value;       /**< Payload     */
+    ev_tstamp ts;      /**< Timestamp   */
+    UT_hash_handle hh; /**< Hash Handle */
 };
 
 /**
  * A cache object
  */
 struct cache {
-    size_t max_entries;              /**<Amount of entries this cache object can hold */
-    struct cache_entry *entries;     /**<Head pointer for uthash */
-    void (*free_cb)(void *key, void *value);  /**<Callback function to free cache entries */
+    size_t max_entries;              /**< Maximum number of entries      */
+    struct cache_entry *entries;     /**< Head pointer                   */
+    cache_free_cb free_cb;           /**< Function to free cache entries */
 };
 
 #define cache_foreach(cache, entry)    \
     struct cache_entry *tmp;           \
     HASH_ITER(hh, (cache)->entries, (entry), (tmp))
 
-inline void *
-cache_popfront(struct cache *cache, bool keyval)
-{
-    if (cache == NULL)
-        return NULL;
-
-    struct cache_entry *element = cache->entries;
-    if (element != NULL) {
-        HASH_DEL(cache->entries, element);
-        return keyval ? element->key : element->value;
-    }
-    return NULL;
-}
-
-typedef void (*cache_free_cb)(void *key, void *value);
 struct cache *new_cache(const size_t, cache_free_cb);
 int cache_create(struct cache **, const size_t, cache_free_cb);
 int cache_delete(struct cache *, int);
@@ -83,5 +69,6 @@ int cache_lookup(struct cache *, void *, size_t, void *);
 int cache_insert(struct cache *, void *, size_t, void *);
 int cache_remove(struct cache *, void *, size_t);
 int cache_key_exist(struct cache *, void *, size_t);
+void *cache_popfront(struct cache *, bool);
 
 #endif

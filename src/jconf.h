@@ -147,7 +147,7 @@ const jconf_t jconf_default = {
     .manager_addr = "127.0.0.1:8839",
 #endif
     .mode         = TCP_ONLY,
-    .remote_dns   = 1,
+    .remote_dns   = true,
     .timeout      = "86400"
 };
 

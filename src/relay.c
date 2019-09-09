@@ -56,11 +56,10 @@ int
     acl = false,
     verbose    = false,
     ipv6first  = false,
-    remote_dns = true, // resolve hostname remotely
+    remote_dns = false, // resolve hostname remotely
     fast_open  = false,
     no_delay   = false,
-    reuse_conn = false,
-    long_idle  = false;
+    reuse_conn = false;
 
 int
 create_and_bind(struct sockaddr_storage *storage,
