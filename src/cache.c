@@ -188,12 +188,14 @@ cache_remove(struct cache *cache, void *key, size_t key_len)
     struct cache_entry *entry;
     HASH_FIND(hh, cache->entries, key, key_len, entry);
 
-    if (entry) {
-        HASH_DEL(cache->entries, entry);
-        return cache_free(cache, entry);
-    }
+    return entry ? cache_remove_r(cache, entry) : 0;
+}
 
-    return 0;
+int
+cache_remove_r(struct cache *cache,
+               struct cache_entry *element) {
+    HASH_DEL(cache->entries, element);
+    return cache_free(cache, element);
 }
 
 /** Checks if a given key is in the cache

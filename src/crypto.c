@@ -89,10 +89,15 @@ bfree(buffer_t *ptr)
 int
 bprepend(buffer_t *dst, buffer_t *src, size_t capacity)
 {
-    brealloc(dst, dst->len + src->len, capacity);
-    memmove(dst->data + src->len, dst->data, dst->len);
-    memcpy(dst->data, src->data, src->len);
-    dst->len = dst->len + src->len;
+    int offset = dst->idx - src->len;
+    if (offset >= 0) {
+        memcpy(dst->data + (dst->idx = offset), src->data, src->len);
+    } else {
+        brealloc(dst, dst->len + src->len, capacity);
+        memmove(dst->data + src->len, dst->data, dst->len);
+        memcpy(dst->data, src->data, src->len);
+    }
+    dst->len += src->len;
     return dst->len;
 }
 
@@ -130,7 +135,7 @@ entropy_check(void)
     if ((fd = open("/dev/random", O_RDONLY)) != -1) {
         if (ioctl(fd, RNDGETENTCNT, &c) == 0 && c < 160) {
             LOGI("This system doesn't provide enough entropy to quickly generate high-quality random numbers.\n"
-                 "Installing the rng-utils/rng-tools, jitterentropy or haveged packages may help.\n"
+                 "Installing the rng-utils/rng-tools, jitterentropy, or haveged packages may help.\n"
                  "On virtualized Linux environments, also consider using virtio-rng.\n"
                  "The service will not start until enough entropy has been collected.\n");
         }

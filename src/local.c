@@ -74,6 +74,17 @@ int vpn = 0;
 uint64_t tx = 0, rx = 0;
 ev_tstamp last = 0;
 char *stat_path = NULL;
+
+void
+stat_update_cb()
+{
+    ev_tstamp now = ev_time();
+    if (now - last > 0.5) {
+        send_traffic_stat(tx, rx);
+        last = now;
+    }
+}
+
 #endif
 
 static int
@@ -428,19 +439,6 @@ server_send_cb(EV_P_ ev_io *w, int revents)
     }
 }
 
-#ifdef __ANDROID__
-void
-stat_update_cb()
-{
-    ev_tstamp now = ev_time();
-    if (now - last > 0.5) {
-        send_traffic_stat(tx, rx);
-        last = now;
-    }
-}
-
-#endif
-
 void
 remote_recv_cb(EV_P_ ev_io *w, int revents)
 {
@@ -558,7 +556,6 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
         // close and free
         close_and_free_remote(EV_A_ remote);
         close_and_free_server(EV_A_ server);
-        return;
     } else {
         // has data to send
         ssize_t s = send(remote->fd, server->buf->data + server->buf->idx,

@@ -30,6 +30,7 @@ enum {
     SSOCKS_ATYP_IPV4   = 0x01,
     SSOCKS_ATYP_DOMAIN = 0x03,
     SSOCKS_ATYP_IPV6   = 0x04,
+    SSOCKS_ATYP_MUX    = 0x05,
     SSOCKS_OPT_ASSOC   = 0x01
 } addrtype;
 
@@ -58,6 +59,11 @@ typedef struct ssocks_hdr {
     };
     uint16_t port;
 } PACKED ssocks_hdr_t;
+
+typedef struct ssocks_mux {
+    uint8_t atyp, id;
+} PACKED ssocks_mux_t;
+#define ssocks_mux_hdr(id) (ssocks_mux_t) { .atyp = SSOCKS_ATYP_MUX, .id = id }
 
 #define MAX_HOSTNAME_LEN 256
 static const int SSOCKS_HDR_SIZE =
@@ -216,8 +222,11 @@ assoc:
             destaddr->addr    = (struct sockaddr_storage *)addr;
             destaddr->port    = addr->sin6_port;
         } break;
+        case SSOCKS_ATYP_MUX: {
+            destaddr->id = buf->data[offset++];
+        } return offset;
         default:
-        if (destaddr->id <= 0) {
+        if (!destaddr->id) {
             atyp >>= SSOCKS_OPT_ASSOC;
             destaddr->id = buf->data[offset++];
             goto assoc;
@@ -233,7 +242,7 @@ create_ssocks_header(buffer_t *buf, ssocks_addr_t *destaddr)
 {
     uint8_t *atyp = (uint8_t *)&buf->data[buf->len++];
     uint8_t option = 0;
-    if (destaddr->id > 0) {
+    if (destaddr->id) {
         option = SSOCKS_OPT_ASSOC;
         buf->data[buf->len++] = destaddr->id;
     }

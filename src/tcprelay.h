@@ -47,7 +47,7 @@ enum {
     STAGE_RESOLVE,      /* Resolve the hostname             */
     STAGE_STREAM,       /* Stream between client and server */
     STAGE_STOP,         /* Server stop to respond           */
-    STAGE_IDLE          /* Server ready to be reused        */
+    STAGE_MULTIPLEX     /* Server multiplexing              */
 };
 
 remote_t *new_remote(server_t *);
@@ -62,14 +62,16 @@ void close_and_free_remote(EV_P_ remote_t *remote);
 void free_server(server_t *server);
 void close_and_free_server(EV_P_ server_t *server);
 
+int remote_connected(remote_t *);
+
 #ifdef MODULE_REMOTE
 ev_timer_callback server_timeout_cb;
 void server_timeout_cb(EV_P_ ev_timer *, int);
 int create_remote(EV_P_ remote_t *, struct sockaddr_storage *);
+void setTosFromConnmark(remote_t *, server_t *);
 #elif defined MODULE_LOCAL
 ev_timer_callback remote_timeout_cb;
 int sendto_remote(remote_t *, buffer_t *);
-int remote_connected(remote_t *);
 remote_t *create_remote(EV_P_ server_t *, buffer_t *,
                               ssocks_addr_t *, int);
 #endif

@@ -33,6 +33,7 @@
 #include "crypto.h"
 #include "jconf.h"
 #include "shadowsocks.h"
+#include "cache.h"
 
 extern int
     acl,
@@ -89,6 +90,7 @@ typedef struct server_ctx {
     ev_io io;
 #ifdef MODULE_REMOTE
     ev_timer watcher;
+    struct cache *remotes; // remote queue
 #endif
     int connected;
     struct server *server;
@@ -103,7 +105,7 @@ typedef struct server {
     struct listen_ctx *listen_ctx;
     struct remote *remote;
 
-    buffer_t *buf;
+    buffer_t *buf, *abuf;
 
 #ifdef MODULE_REMOTE
     int frag;
@@ -112,9 +114,13 @@ typedef struct server {
     cipher_ctx_t *e_ctx;
     cipher_ctx_t *d_ctx;
 
+    struct cache *remotes;
 #ifdef USE_NFCONNTRACK_TOS
     struct dscptracker *tracker;
 #endif
+#elif defined MODULE_LOCAL
+    //struct cork_dllist_item queue;
+    list_element(struct server);
 #endif
 
     struct cork_dllist_item entries;
@@ -124,6 +130,7 @@ typedef struct remote_ctx {
     ev_io io;
 #ifdef MODULE_LOCAL
     ev_timer watcher;
+    struct cache *servers; // server queue
 #endif
     int connected;
     struct remote *remote;
@@ -136,18 +143,25 @@ typedef struct remote {
     int connect_ex_done;
 #endif
 
-    buffer_t *buf;
+    buffer_t *buf, *abuf;
 
 #ifdef MODULE_LOCAL
     crypto_t *crypto;
     cipher_ctx_t *e_ctx;
     cipher_ctx_t *d_ctx;
+
+    struct cache *servers;
+#elif defined MODULE_REMOTE
+    int cid;
+    //struct cork_dllist_item queue;
+    list_element(struct remote);
 #endif
 
     struct remote_ctx *recv_ctx;
     struct remote_ctx *send_ctx;
     struct server *server;
     struct sockaddr_storage *addr;
+    struct cork_dllist_item entries;
 } remote_t;
 #elif defined MODULE_CTX_UDP // MODULE_CTX_UDP /////////////
 #ifdef MODULE_REMOTE
@@ -192,6 +206,7 @@ typedef struct remote_cnf {
     struct sockaddr_storage *addr;
 #ifdef MODULE_CTX_TCP
     cork_array(remote_t *) *remotes;
+    //struct cork_dllist *remotes;
 #endif
 } remote_cnf_t;
 

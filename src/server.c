@@ -63,106 +63,16 @@ uint64_t tx = 0, rx = 0;
 static void
 report_addr(EV_P_ server_t *server, const char *info)
 {
-    server->stage = STAGE_STOP;
-
     if (verbose) {
         struct sockaddr_storage addr = {};
         if (getpeername(server->fd, (struct sockaddr *)&addr, &(socklen_t) { sizeof(addr) }) == 0) {
             LOGE("failed to handshake with %s: %s", sockaddr_readable("%a", &addr), info);
         }
     }
+
+    server->stage = STAGE_STOP;
+    close_and_free_server(EV_A_ server);
 }
-
-#ifdef USE_NFCONNTRACK_TOS
-int
-setMarkDscpCallback(enum nf_conntrack_msg_type type, struct nf_conntrack *ct, void *data)
-{
-    server_t *server            = (server_t *)data;
-    struct dscptracker *tracker = server->tracker;
-
-    tracker->mark = nfct_get_attr_u32(ct, ATTR_MARK);
-    if ((tracker->mark & 0xff00) == MARK_MASK_PREFIX) {
-        // Extract DSCP value from mark value
-        tracker->dscp = tracker->mark & 0x00ff;
-        int tos = (tracker->dscp) << 2;
-        if (setsockopt(server->fd, IPPROTO_IP, IP_TOS, &tos, sizeof(tos)) != 0) {
-            ERROR("iptable setsockopt IP_TOS");
-        }
-    }
-    return NFCT_CB_CONTINUE;
-}
-
-void
-conntrackQuery(server_t *server)
-{
-    struct dscptracker *tracker = server->tracker;
-    if (tracker && tracker->ct) {
-        // Trying query mark from nf conntrack
-        struct nfct_handle *h = nfct_open(CONNTRACK, 0);
-        if (h) {
-            nfct_callback_register(h, NFCT_T_ALL, setMarkDscpCallback, (void *)server);
-            int x = nfct_query(h, NFCT_Q_GET, tracker->ct);
-            if (x == -1) {
-                LOGE("QOS: Failed to retrieve connection mark %s", strerror(errno));
-            }
-            nfct_close(h);
-        } else {
-            LOGE("QOS: Failed to open conntrack handle for upstream netfilter mark retrieval.");
-        }
-    }
-}
-
-void
-setTosFromConnmark(remote_t *remote, server_t *server)
-{
-    if (server->tracker && server->tracker->ct) {
-        if (server->tracker->mark == 0 && server->tracker->packet_count < MARK_MAX_PACKET) {
-            server->tracker->packet_count++;
-            conntrackQuery(server);
-        }
-    } else {
-        socklen_t len;
-        struct sockaddr_storage sin;
-        len = sizeof(sin);
-        if (getsockname(remote->fd, (struct sockaddr *)&sin, &len) == 0) {
-            struct sockaddr_storage from_addr;
-            len = sizeof from_addr;
-            if (getpeername(remote->fd, (struct sockaddr *)&from_addr, &len) == 0) {
-                if ((server->tracker = (struct dscptracker *)ss_malloc(sizeof(struct dscptracker)))) {
-                    if ((server->tracker->ct = nfct_new())) {
-                        // Build conntrack query SELECT
-                        if (from_addr.ss_family == AF_INET) {
-                            struct sockaddr_in *src = (struct sockaddr_in *)&from_addr;
-                            struct sockaddr_in *dst = (struct sockaddr_in *)&sin;
-
-                            nfct_set_attr_u8(server->tracker->ct, ATTR_L3PROTO, AF_INET);
-                            nfct_set_attr_u32(server->tracker->ct, ATTR_IPV4_DST, dst->sin_addr.s_addr);
-                            nfct_set_attr_u32(server->tracker->ct, ATTR_IPV4_SRC, src->sin_addr.s_addr);
-                            nfct_set_attr_u16(server->tracker->ct, ATTR_PORT_DST, dst->sin_port);
-                            nfct_set_attr_u16(server->tracker->ct, ATTR_PORT_SRC, src->sin_port);
-                        } else if (from_addr.ss_family == AF_INET6) {
-                            struct sockaddr_in6 *src = (struct sockaddr_in6 *)&from_addr;
-                            struct sockaddr_in6 *dst = (struct sockaddr_in6 *)&sin;
-
-                            nfct_set_attr_u8(server->tracker->ct, ATTR_L3PROTO, AF_INET6);
-                            nfct_set_attr(server->tracker->ct, ATTR_IPV6_DST, dst->sin6_addr.s6_addr);
-                            nfct_set_attr(server->tracker->ct, ATTR_IPV6_SRC, src->sin6_addr.s6_addr);
-                            nfct_set_attr_u16(server->tracker->ct, ATTR_PORT_DST, dst->sin6_port);
-                            nfct_set_attr_u16(server->tracker->ct, ATTR_PORT_SRC, src->sin6_port);
-                        }
-                        nfct_set_attr_u8(server->tracker->ct, ATTR_L4PROTO, IPPROTO_TCP);
-                        conntrackQuery(server);
-                    } else {
-                        LOGE("Failed to allocate new conntrack for upstream netfilter mark retrieval.");
-                        server->tracker->ct = NULL;
-                    }
-                }
-            }
-        }
-    }
-}
-
-#endif
 
 static void
 resolv_cb(struct sockaddr *addr, void *data)
@@ -192,6 +102,13 @@ resolv_cb(struct sockaddr *addr, void *data)
             close_and_free_server(EV_A_ server);
         } else {
             // listen to remote connected event
+            if (server->stage == STAGE_MULTIPLEX &&
+                cache_insert(server->remotes,
+                    &remote->cid, sizeof(remote->cid), remote)) {
+                close_and_free_remote(EV_A_ remote);
+                close_and_free_server(EV_A_ server);
+                return;
+            }
             ev_io_start(EV_A_ & remote->send_ctx->io);
         }
     }
@@ -205,17 +122,20 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
     crypto_t *crypto = server->crypto;
     remote_t *remote = elvis(server->remote, new_remote(server));
 
-    buffer_t *buf = remote->buf;
+    buffer_t *buf = server->buf;
     ssize_t r = recv(server->fd, buf->data, SOCKET_BUF_SIZE, 0);
 
     if (r == 0) {
-        // connection closed
-        if (verbose) {
-            LOGI("server_recv closing the connection");
-        }
-        server->stage = STAGE_TIMEOUT;
-        close_and_free_remote(EV_A_ remote);
-        close_and_free_server(EV_A_ server);
+        if (server->stage != STAGE_MULTIPLEX) {
+            // connection closed
+            if (verbose) {
+                LOGI("server_recv closing the connection");
+            }
+
+            server->stage = STAGE_TIMEOUT;
+            close_and_free_remote(EV_A_ remote);
+            close_and_free_server(EV_A_ server);
+        }        
         return;
     } else if (r == -1) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -232,11 +152,8 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
     }
 
     tx += r;
-    if (server->stage == STAGE_STOP) {
-        return;
-    }
-
     buf->len = r;
+
     int err = crypto->decrypt(buf, server->d_ctx, SOCKET_BUF_SIZE);
 
     switch (err) {
@@ -256,25 +173,42 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
 
     // handshake and transmit data
     switch (server->stage) {
+        case STAGE_MULTIPLEX:
         case STAGE_INIT: {
             ssocks_addr_t destaddr = {};
             int offset = parse_ssocks_header(buf, &destaddr, 0);
 
             if (offset < 0 || buf->len < offset) {
-                report_addr(EV_A_ server, "invalid request length");
+            LOGE("len %d idx %d", (int)server->buf->len, (int)server->buf->idx);
+            LOGE("atyp %d id %d", (uint8_t)server->buf->data[0], (uint8_t)server->buf->data[1]);
+
+                report_addr(EV_A_ server, "invalid request");
                 return;
             }
 
-            server->remote = remote;
+            if (reuse_conn) {
+                if (destaddr.id &&
+                    server->stage != STAGE_MULTIPLEX)
+                {
+                    server->stage = STAGE_MULTIPLEX;
+                }
+            } else {
+                if (destaddr.id) {
+                    LOGE("connection multiplexing not enabled");
+                    close_and_free_server(EV_A_ server);
+                    return;
+                }
+                server->remote = remote;
+            }
 
             buf->len -= offset;
             buf->idx += offset;
 
-            ev_io_stop(EV_A_ & server_recv_ctx->io);
-            if (destaddr.dname != NULL) {
+            if (destaddr.dname) {
                 null_terminate(destaddr.dname, destaddr.dname_len);
 
-                if (acl && search_acl(ACL_ATYP_DOMAIN, &(dname_t){ destaddr.dname_len, destaddr.dname }, ACL_BLOCKLIST)) {
+                if (acl && search_acl(ACL_ATYP_DOMAIN,
+                        &(dname_t){ destaddr.dname_len, destaddr.dname }, ACL_BLOCKLIST)) {
                     if (verbose)
                         LOGI("blocking access to %s", destaddr.dname);
                     close_and_free_server(EV_A_ server);
@@ -284,9 +218,15 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                     LOGI("connecting to %s:%d", destaddr.dname, ntohs(destaddr.port));
                 }
 
-                server->stage = STAGE_RESOLVE;
+                if (server->stage == STAGE_MULTIPLEX) {
+                    remote->cid = destaddr.id;
+                } else {
+                    server->stage = STAGE_RESOLVE;
+                    ev_io_stop(EV_A_ & server_recv_ctx->io);
+                }
+
                 resolv_start(destaddr.dname, destaddr.port, resolv_cb, NULL, server);
-            } else {
+            } else if (destaddr.addr) {
                 if (acl && search_acl(ACL_ATYP_IP, destaddr.addr, ACL_BLOCKLIST)) {
                     if (verbose)
                         LOGI("blocking access to %s",
@@ -299,10 +239,28 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                          sockaddr_readable("%a:%p", destaddr.addr));
                 }
 
+                if (server->stage == STAGE_MULTIPLEX) {
+                    remote->cid = destaddr.id;
+                } else {
+                    ev_io_stop(EV_A_ & server_recv_ctx->io);
+                }
+
                 resolv_cb((struct sockaddr *)destaddr.addr, server);
+            } else {
+                if (server->stage == STAGE_MULTIPLEX && destaddr.id) {
+                    if (cache_lookup(server->remotes,
+                            &destaddr.id, sizeof(destaddr.id), &remote)) {
+                        close_and_free_remote(EV_A_ remote);
+                        close_and_free_server(EV_A_ server);
+                        return;
+                    }
+                    goto TAG_STAGE_STREAM;
+                }
             }
         } return;
-        case STAGE_STREAM: {
+        case STAGE_STREAM:
+        TAG_STAGE_STREAM:
+        {
             ev_timer_again(EV_A_ & server->recv_ctx->watcher);
 
             int s = send(remote->fd, buf->data, buf->len, 0);
@@ -317,7 +275,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                     close_and_free_remote(EV_A_ remote);
                     close_and_free_server(EV_A_ server);
                 }
-            } else if (s < remote->buf->len) {
+            } else if (s < buf->len) {
                 buf->len -= s;
                 buf->idx += s;
                 ev_io_stop(EV_A_ & server_recv_ctx->io);
@@ -336,42 +294,63 @@ server_send_cb(EV_P_ ev_io *w, int revents)
     server_t *server              = server_send_ctx->server;
     remote_t *remote              = server->remote;
 
+    struct cache_entry *lremote = NULL;
+    if (server->stage == STAGE_MULTIPLEX) {
+        lremote = cache_head(server_send_ctx->remotes);
+        if (!lremote) {
+            ev_io_stop(EV_A_ & server_send_ctx->io);
+            return;
+        }
+        remote = *(remote_t **)lremote->key;
+    }
+
     if (remote == NULL) {
         LOGE("invalid server");
         close_and_free_server(EV_A_ server);
         return;
     }
 
-    if (server->buf->len == 0) {
+    if (remote->buf->len == 0) {
         // close and free
         if (verbose) {
             LOGI("server_send closing the connection");
         }
         close_and_free_remote(EV_A_ remote);
         close_and_free_server(EV_A_ server);
-        return;
     } else {
         // has data to send
-        ssize_t s = send(server->fd, server->buf->data + server->buf->idx,
-                         server->buf->len, 0);
+        ssize_t s = send(server->fd, remote->buf->data + remote->buf->idx,
+                         remote->buf->len, 0);
+
         if (s == -1) {
             if (errno != EAGAIN && errno != EWOULDBLOCK) {
                 ERROR("server_send_send");
                 server->stage = STAGE_ERROR;
                 close_and_free_remote(EV_A_ remote);
                 close_and_free_server(EV_A_ server);
-            }
-            return;
-        } else if (s < server->buf->len) {
+            }         
+        } else if (s < remote->buf->len) {
             // partly sent, move memory, wait for the next time to send
-            server->buf->len -= s;
-            server->buf->idx += s;
-            return;
+            remote->buf->len -= s;
+            remote->buf->idx += s;
+            if (server->stage == STAGE_MULTIPLEX) {
+                bprepend(remote->buf, remote->abuf, SOCKET_BUF_SIZE);
+            }
         } else {
             // all sent out, wait for reading
-            server->buf->len = 0;
-            server->buf->idx = 0;
-            ev_io_stop(EV_A_ & server_send_ctx->io);
+            remote->buf->len = 0;
+            remote->buf->idx = 0;
+
+            if (server->stage == STAGE_MULTIPLEX) {
+                if (cache_remove_r(server_send_ctx->remotes, lremote))
+                {
+                    LOGE("failed to remove session");
+                    close_and_free_remote(EV_A_ remote);
+                    close_and_free_server(EV_A_ server);
+                }
+            } else
+                ev_io_stop(EV_A_ & server_send_ctx->io);
+
             if (remote != NULL) {
                 ev_io_start(EV_A_ & remote->recv_ctx->io);
             } else {
@@ -379,7 +358,6 @@ server_send_cb(EV_P_ ev_io *w, int revents)
                 close_and_free_remote(EV_A_ remote);
                 close_and_free_server(EV_A_ server);
             }
-            return;
         }
     }
 }
@@ -400,7 +378,27 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
 
     ev_timer_again(EV_A_ & server->recv_ctx->watcher);
 
-    ssize_t r = recv(remote->fd, server->buf->data, SOCKET_BUF_SIZE, 0);
+    if (server->stage == STAGE_MULTIPLEX) {
+        if (remote->cid && !remote->abuf) {
+            buffer_t *abuf = remote->abuf
+                           = new_buffer(sizeof(uint8_t));
+
+            abuf->data[abuf->len++] =
+            remote->buf->data[remote->buf->len++] = remote->cid;
+
+            int err = crypto->encrypt(abuf, server->e_ctx, abuf->capacity);
+
+            if (err) {
+                LOGE("invalid password or cipher");
+                close_and_free_remote(EV_A_ remote);
+                close_and_free_server(EV_A_ server);
+                return;
+            }
+        }
+    }
+
+    ssize_t r = recv(remote->fd, remote->buf->data + remote->buf->len,
+                     SOCKET_BUF_SIZE - remote->buf->len, 0);
 
     if (r == 0) {
         // connection closed
@@ -425,12 +423,8 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
 
     rx += r;
 
-    if (server->stage == STAGE_STOP) {
-        return;
-    }
-
-    server->buf->len = r;
-    int err = crypto->encrypt(server->buf, server->e_ctx, SOCKET_BUF_SIZE);
+    remote->buf->len += r;
+    int err = crypto->encrypt(remote->buf, server->e_ctx, SOCKET_BUF_SIZE);
 
     if (err) {
         LOGE("invalid password or cipher");
@@ -442,13 +436,15 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
 #ifdef USE_NFCONNTRACK_TOS
     setTosFromConnmark(remote, server);
 #endif
-    int s = send(server->fd, server->buf->data, server->buf->len, 0);
+    int s = send(server->fd, remote->buf->data, remote->buf->len, 0);
 
     if (s == -1) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             // no data, wait for send
-            server->buf->idx = 0;
+            remote->buf->idx = 0;
             ev_io_stop(EV_A_ & remote_recv_ctx->io);
+            if (server->stage == STAGE_MULTIPLEX)
+                uniqset_add(server->send_ctx->remotes, remote);
             ev_io_start(EV_A_ & server->send_ctx->io);
         } else {
             ERROR("remote_recv_send");
@@ -457,10 +453,12 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
             close_and_free_server(EV_A_ server);
             return;
         }
-    } else if (s < server->buf->len) {
-        server->buf->len -= s;
-        server->buf->idx += s;
+    } else if (s < remote->buf->len) {
+        remote->buf->len -= s;
+        remote->buf->idx += s;
         ev_io_stop(EV_A_ & remote_recv_ctx->io);
+        if (server->stage == STAGE_MULTIPLEX)
+            uniqset_add(server->send_ctx->remotes, remote);
         ev_io_start(EV_A_ & server->send_ctx->io);
     }
 
@@ -487,43 +485,10 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
     }
 
     if (!remote_send_ctx->connected) {
-#ifdef TCP_FASTOPEN_WINSOCK
-        if (fast_open) {
-            // Check if ConnectEx is done
-            if (!remote->connect_ex_done) {
-                DWORD numBytes;
-                DWORD flags;
-                // Non-blocking way to fetch ConnectEx result
-                if (WSAGetOverlappedResult(remote->fd, &remote->olap,
-                                           &numBytes, FALSE, &flags)) {
-                    remote->buf->len -= numBytes;
-                    remote->buf->idx += numBytes;
-                    remote->connect_ex_done = 1;
-                } else if (WSAGetLastError() == WSA_IO_INCOMPLETE) {
-                    // XXX: ConnectEx still not connected, wait for next time
-                    return;
-                } else {
-                    ERROR("WSAGetOverlappedResult");
-                    // not connected
-                    close_and_free_remote(EV_A_ remote);
-                    close_and_free_server(EV_A_ server);
-                    return;
-                }
-            }
-
-            // Make getpeername work
-            if (setsockopt(remote->fd, SOL_SOCKET,
-                           SO_UPDATE_CONNECT_CONTEXT, NULL, 0) != 0) {
-                ERROR("setsockopt");
-            }
-        }
-#endif
-        struct sockaddr_storage addr = {};
-        int r = getpeername(remote->fd, (struct sockaddr *)&addr, &(socklen_t) { sizeof(addr) });
-        if (r == 0) {
+        if (remote_connected(remote)) {
             remote_send_ctx->connected = 1;
 
-            if (remote->buf->len == 0) {
+            if (server->buf->len == 0) {
                 server->stage = STAGE_STREAM;
                 ev_io_stop(EV_A_ & remote_send_ctx->io);
                 ev_io_start(EV_A_ & server->recv_ctx->io);
@@ -539,7 +504,7 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
         }
     }
 
-    if (remote->buf->len == 0) {
+    if (server->buf->len == 0) {
         // close and free
         if (verbose) {
             LOGI("remote_send closing the connection");
@@ -549,8 +514,8 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
         return;
     } else {
         // has data to send
-        ssize_t s = send(remote->fd, remote->buf->data + remote->buf->idx,
-                         remote->buf->len, 0);
+        ssize_t s = send(remote->fd, server->buf->data + server->buf->idx,
+                         server->buf->len, 0);
         if (s == -1) {
             if (errno != EAGAIN && errno != EWOULDBLOCK) {
                 ERROR("remote_send_send");
@@ -558,20 +523,19 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
                 close_and_free_remote(EV_A_ remote);
                 close_and_free_server(EV_A_ server);
             }
-            return;
-        } else if (s < remote->buf->len) {
+        } else if (s < server->buf->len) {
             // partly sent, move memory, wait for the next time to send
-            remote->buf->len -= s;
-            remote->buf->idx += s;
-            return;
+            server->buf->len -= s;
+            server->buf->idx += s;
         } else {
             // all sent out, wait for reading
-            remote->buf->len = 0;
-            remote->buf->idx = 0;
+            server->buf->len = 0;
+            server->buf->idx = 0;
             ev_io_stop(EV_A_ & remote_send_ctx->io);
             if (server != NULL) {
                 ev_io_start(EV_A_ & server->recv_ctx->io);
-                if (server->stage != STAGE_STREAM) {
+                if (server->stage != STAGE_STREAM &&
+                    server->stage != STAGE_MULTIPLEX) {
                     server->stage = STAGE_STREAM;
                     ev_io_start(EV_A_ & remote->recv_ctx->io);
                 }
@@ -580,7 +544,6 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
                 close_and_free_remote(EV_A_ remote);
                 close_and_free_server(EV_A_ server);
             }
-            return;
         }
     }
 }
@@ -621,6 +584,7 @@ accept_cb(EV_P_ ev_io *w, int revents)
     }
 
     server_t *server = new_server(serverfd, listener);
+
     ev_io_start(EV_A_ & server->recv_ctx->io);
     ev_timer_start(EV_A_ & server->recv_ctx->watcher);
 }

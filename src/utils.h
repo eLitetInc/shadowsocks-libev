@@ -305,18 +305,23 @@ currtime_readable()
         cork_array_append(dst, cork_array_at(src, i));  \
     }
 
-#define cork_dllist_popfront(dst, T, entries, remove) ({     \
+#define cork_dllist_popfront(dst, element, entries) \
+    cork_dllist_pop(dst, element, entries, false)
+#define cork_dllist_pop(dst, element, entries, remove) {     \
     struct cork_dllist_item *i = cork_dllist_head(dst);      \
     if (i != NULL) {                                         \
-        T *element = cork_container_of(i, (T), (entries));     \
+        element = cork_container_of(i,                       \
+                    __typeof__(*(element)), (entries));      \
         if (remove) cork_dllist_remove(&element->(entries)); \
-        element;                                             \
-    } else NULL;                                             \
-})
+    }                                                        \
+}
 
-#define cork_dllist_each(dst, element, T, entries)  \
-    struct cork_dllist_item *curr, *next;           \
+#define cork_dllist_each(dst, element, entries)  \
+    struct cork_dllist_item *curr, *next;        \
     cork_dllist_foreach((dst), curr, next, __typeof__(*(element)), (element), (entries))
+
+#define cork_dllist_poll(dst, element, entries)  \
+    cork_dllist_each(dst, element, entries) if (rand() & 1) break;
 
 inline void
 cork_dllist_merge(struct cork_dllist *dst, struct cork_dllist *src)

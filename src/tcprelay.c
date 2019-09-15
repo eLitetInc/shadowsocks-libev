@@ -124,11 +124,17 @@ new_server(int fd, listen_ctx_t *listener)
 
 #ifdef MODULE_REMOTE
     crypto_t *crypto = listener->crypto;
+
     server->crypto   = crypto;
     server->e_ctx    = ss_malloc(sizeof(cipher_ctx_t));
     server->d_ctx    = ss_malloc(sizeof(cipher_ctx_t));
     crypto->ctx_init(crypto->cipher, server->e_ctx, 1);
     crypto->ctx_init(crypto->cipher, server->d_ctx, 0);
+
+    if (reuse_conn) {
+        server->remotes = new_cache(-1, NULL);
+        server->send_ctx->remotes = new_cache(-1, NULL);
+    }
 
     int request_timeout = min(MAX_REQUEST_TIMEOUT, listener->timeout)
                           + rand() % MAX_REQUEST_TIMEOUT,
@@ -137,11 +143,174 @@ new_server(int fd, listen_ctx_t *listener)
 
     ev_timer_init(&server->recv_ctx->watcher, server_timeout_cb,
                   request_timeout, repeat_interval);
+
+    if (verbose)
+        server_conn++;
 #endif
 
     cork_dllist_add(&connections, &server->entries);
 
     return server;
+}
+
+int
+remote_connected(remote_t *remote)
+{
+#ifdef TCP_FASTOPEN_WINSOCK
+    if (fast_open) {
+        // Check if ConnectEx is done
+        if (!remote->connect_ex_done) {
+            DWORD numBytes, flags;
+            // Non-blocking way to fetch ConnectEx result
+            if (WSAGetOverlappedResult(remote->fd, &remote->olap,
+                                       &numBytes, FALSE, &flags)) {
+                remote->buf->len -= numBytes;
+                remote->buf->idx += numBytes;
+                remote->connect_ex_done = 1;
+            } else if (WSAGetLastError() == WSA_IO_INCOMPLETE) {
+                // XXX: ConnectEx still not connected, wait for next time
+                errno = EINPROGRESS;
+                return false;
+            } else {
+                ERROR("WSAGetOverlappedResult");
+                return false;
+            }
+        }
+
+        // Make getpeername work
+        if (setsockopt(remote->fd, SOL_SOCKET,
+                       SO_UPDATE_CONNECT_CONTEXT, NULL, 0) != 0) {
+            ERROR("setsockopt");
+        }
+    }
+#endif
+    int r = 0;
+
+    if (!remote->addr) {
+        struct sockaddr_storage addr;
+        r = getpeername(remote->fd, (struct sockaddr *)&addr, &(socklen_t) { sizeof(addr) });
+    }
+
+    return r == 0 ? true : false;
+}
+
+void
+free_remote(remote_t *remote)
+{
+#ifdef MODULE_REMOTE
+    if (verbose)
+        remote_conn--;
+#elif defined MODULE_LOCAL
+    if (remote->e_ctx != NULL) {
+        remote->crypto->ctx_release(remote->e_ctx);
+        ss_free(remote->e_ctx);
+    }
+    if (remote->d_ctx != NULL) {
+        remote->crypto->ctx_release(remote->d_ctx);
+        ss_free(remote->d_ctx);
+    }
+#endif
+    if (remote->server != NULL) {
+#ifdef MODULE_REMOTE
+        if (remote->server->stage == STAGE_MULTIPLEX)
+            cache_remove(remote->server->remotes,
+                         &remote->cid, sizeof(remote->cid));
+#endif
+        remote->server->remote = NULL;
+    }
+    if (remote->buf != NULL) {
+        bfree(remote->buf);
+        ss_free(remote->buf);
+    }
+    ss_free(remote->recv_ctx);
+    ss_free(remote->send_ctx);
+    ss_free(remote);
+}
+
+void
+close_and_free_remote(EV_P_ remote_t *remote)
+{
+    if (remote != NULL) {
+        if (remote->server &&
+            remote->server->stage != STAGE_ERROR)
+            return;
+
+        ev_io_stop(EV_A_ & remote->send_ctx->io);
+        ev_io_stop(EV_A_ & remote->recv_ctx->io);
+#ifdef MODULE_LOCAL
+        if (reuse_conn)
+            cork_dllist_remove(remote->entries);
+        ev_timer_stop(EV_A_ & remote->send_ctx->watcher);
+#endif
+        close(remote->fd);
+        free_remote(remote);
+    }
+}
+
+void
+free_server(server_t *server)
+{
+#ifdef MODULE_REMOTE
+    if (server->e_ctx != NULL) {
+        server->crypto->ctx_release(server->e_ctx);
+        ss_free(server->e_ctx);
+    }
+    if (server->d_ctx != NULL) {
+        server->crypto->ctx_release(server->d_ctx);
+        ss_free(server->d_ctx);
+    }
+#ifdef USE_NFCONNTRACK_TOS
+    if (server->tracker) {
+        struct dscptracker *tracker = server->tracker;
+        struct nf_conntrack *ct     = server->tracker->ct;
+        server->tracker = NULL;
+        if (ct) {
+            nfct_destroy(ct);
+        }
+        free(tracker);
+    }
+#endif
+#endif
+    cork_dllist_remove(&server->entries);
+
+    if (server->remote != NULL) {
+#ifdef MODULE_LOCAL
+        if (reuse_conn) {
+            cache_remove(server->remote->servers,
+                         &server->fd, sizeof(server->fd));
+            uniqset_remove(server->remote->send_ctx->servers, server);
+        }
+#endif
+        server->remote->server = NULL;
+    }
+    if (server->buf != NULL) {
+        bfree(server->buf);
+        ss_free(server->buf);
+    }
+    if (server->abuf != NULL) {
+        bfree(server->abuf);
+        ss_free(server->abuf);
+    }
+    ss_free(server->recv_ctx);
+    ss_free(server->send_ctx);
+    ss_free(server);
+}
+
+void
+close_and_free_server(EV_P_ server_t *server)
+{
+    if (server != NULL) {
+        ev_io_stop(EV_A_ & server->send_ctx->io);
+#ifdef MODULE_REMOTE
+        if (verbose)
+            LOGI("current server connection: %d", server_conn--);
+        ev_timer_stop(EV_A_ & server->recv_ctx->watcher);
+#endif
+        ev_io_stop(EV_A_ & server->recv_ctx->io);
+        if (server->stage != STAGE_STOP)
+            close(server->fd);
+        free_server(server);
+    }
 }
 
 #ifdef MODULE_LOCAL
@@ -192,8 +361,8 @@ sendto_remote(remote_t *remote, buffer_t *buf)
 int
 init_remote(EV_P_ remote_t *remote, remote_cnf_t *conf)
 {
-    server_t *server             = remote->server;
-    listen_ctx_t *listen_ctx     = server->listen_ctx;
+    server_t *server         = remote->server;
+    listen_ctx_t *listen_ctx = server->listen_ctx;
     struct sockaddr_storage *remote_addr = conf->addr;
 
     if (conf->crypto) {
@@ -226,7 +395,7 @@ init_remote(EV_P_ remote_t *remote, remote_cnf_t *conf)
 
     if (listen_ctx->tos >= 0 &&
         setsockopt(remotefd, IPPROTO_IP, IP_TOS,
-                    &listen_ctx->tos, sizeof(listen_ctx->tos)) != 0) {
+                   &listen_ctx->tos, sizeof(listen_ctx->tos)) != 0) {
         ERROR("setsockopt IP_TOS");
     }
 
@@ -261,15 +430,18 @@ init_remote(EV_P_ remote_t *remote, remote_cnf_t *conf)
     }
 
     remote->fd = remotefd;
+    if (reuse_conn) {
+        remote->servers = new_cache(-1, NULL);
+        remote->send_ctx->servers = new_cache(-1, NULL);
+
+        if (conf->remotes)
+            cork_array_append(conf->remotes, remote);
+    }
 
     ev_io_init(&remote->recv_ctx->io, remote_recv_cb, remotefd, EV_READ);
     ev_io_init(&remote->send_ctx->io, remote_send_cb, remotefd, EV_WRITE);
     ev_timer_init(&remote->send_ctx->watcher, remote_timeout_cb,
                   min(MAX_CONNECT_TIMEOUT, listen_ctx->timeout), 0);
-
-    if (conf->remotes) {
-        cork_array_append(conf->remotes, remote);
-    }
 
     return 0;
 }
@@ -327,6 +499,8 @@ bailed: {
 
         if (buf != NULL) {
             buffer_t *abuf = new_buffer(SSOCKS_HDR_SIZE);
+            if (reuse_conn)
+                destaddr->id = server->fd;
             create_ssocks_header(abuf, destaddr);
             bprepend(buf, abuf, SOCKET_BUF_SIZE);
             free_buffer(abuf);
@@ -357,47 +531,6 @@ bailed: {
                     .addr  = destaddr->addr,
                     .iface = listener->iface,
                 }))) == 0 ? remote : NULL;
-}
-
-int
-remote_connected(remote_t *remote)
-{
-#ifdef TCP_FASTOPEN_WINSOCK
-    if (fast_open) {
-        // Check if ConnectEx is done
-        if (!remote->connect_ex_done) {
-            DWORD numBytes, flags;
-            // Non-blocking way to fetch ConnectEx result
-            if (WSAGetOverlappedResult(remote->fd, &remote->olap,
-                                       &numBytes, FALSE, &flags)) {
-                remote->buf->len -= numBytes;
-                remote->buf->idx += numBytes;
-                remote->connect_ex_done = 1;
-            } else if (WSAGetLastError() == WSA_IO_INCOMPLETE) {
-                // XXX: ConnectEx still not connected, wait for next time
-                errno = EINPROGRESS;
-                return false;
-            } else {
-                ERROR("WSAGetOverlappedResult");
-                return false;
-            }
-        }
-
-        // Make getpeername work
-        if (setsockopt(remote->fd, SOL_SOCKET,
-                       SO_UPDATE_CONNECT_CONTEXT, NULL, 0) != 0) {
-            ERROR("setsockopt");
-        }
-    }
-#endif
-    int r = 0;
-
-    if (!remote->addr) {
-        struct sockaddr_storage addr;
-        r = getpeername(remote->fd, (struct sockaddr *)&addr, &(socklen_t) { sizeof(addr) });
-    }
-
-    return r == 0 ? true : false;
 }
 
 #elif defined MODULE_REMOTE
@@ -611,115 +744,94 @@ free_listeners(struct ev_loop *loop)
     }
 }
 
-#endif
-
-void
-free_remote(remote_t *remote)
-{
-#ifdef MODULE_REMOTE
-    if (verbose)
-        remote_conn--;
-#elif defined MODULE_LOCAL
-    if (remote->e_ctx != NULL) {
-        remote->crypto->ctx_release(remote->e_ctx);
-        ss_free(remote->e_ctx);
-    }
-    if (remote->d_ctx != NULL) {
-        remote->crypto->ctx_release(remote->d_ctx);
-        ss_free(remote->d_ctx);
-    }
-#endif
-    if (remote->server != NULL) {
-        remote->server->remote = NULL;
-    }
-    if (remote->buf != NULL) {
-        bfree(remote->buf);
-        ss_free(remote->buf);
-    }
-    ss_free(remote->recv_ctx);
-    ss_free(remote->send_ctx);
-    ss_free(remote);
-}
-
-void
-close_and_free_remote(EV_P_ remote_t *remote)
-{
-    if (remote != NULL) {
-        ev_io_stop(EV_A_ & remote->send_ctx->io);
-        ev_io_stop(EV_A_ & remote->recv_ctx->io);
-#ifdef MODULE_LOCAL
-        ev_timer_stop(EV_A_ & remote->send_ctx->watcher);
-#endif
-        close(remote->fd);
-        free_remote(remote);
-    }
-}
-
-void
-free_server(server_t *server)
-{
-#ifdef MODULE_REMOTE
-    if (server->e_ctx != NULL) {
-        server->crypto->ctx_release(server->e_ctx);
-        ss_free(server->e_ctx);
-    }
-    if (server->d_ctx != NULL) {
-        server->crypto->ctx_release(server->d_ctx);
-        ss_free(server->d_ctx);
-    }
 #ifdef USE_NFCONNTRACK_TOS
-    if (server->tracker) {
-        struct dscptracker *tracker = server->tracker;
-        struct nf_conntrack *ct     = server->tracker->ct;
-        server->tracker = NULL;
-        if (ct) {
-            nfct_destroy(ct);
-        }
-        free(tracker);
-    }
-#endif
-#endif
-    cork_dllist_remove(&server->entries);
+int
+setMarkDscpCallback(enum nf_conntrack_msg_type type, struct nf_conntrack *ct, void *data)
+{
+    server_t *server            = (server_t *)data;
+    struct dscptracker *tracker = server->tracker;
 
-    if (server->remote != NULL) {
-        server->remote->server = NULL;
+    tracker->mark = nfct_get_attr_u32(ct, ATTR_MARK);
+    if ((tracker->mark & 0xff00) == MARK_MASK_PREFIX) {
+        // Extract DSCP value from mark value
+        tracker->dscp = tracker->mark & 0x00ff;
+        int tos = (tracker->dscp) << 2;
+        if (setsockopt(server->fd, IPPROTO_IP, IP_TOS, &tos, sizeof(tos)) != 0) {
+            ERROR("iptable setsockopt IP_TOS");
+        }
     }
-    if (server->buf != NULL) {
-        bfree(server->buf);
-        ss_free(server->buf);
-    }
-    ss_free(server->recv_ctx);
-    ss_free(server->send_ctx);
-    ss_free(server);
+    return NFCT_CB_CONTINUE;
 }
 
 void
-close_and_free_server(EV_P_ server_t *server)
+conntrackQuery(server_t *server)
 {
-    if (server != NULL) {
-        ev_io_stop(EV_A_ & server->send_ctx->io);
-#ifdef MODULE_REMOTE
-        if (reuse_conn &&
-            server->stage != STAGE_ERROR)
-        {
-            //crypto_t *crypto = server->crypto;
-            //crypto->ctx_init(crypto->cipher, server->e_ctx, 1);
-            //crypto->ctx_init(crypto->cipher, server->d_ctx, 0);
-
-            server->stage = STAGE_INIT;
-            ev_timer_again(EV_A_ & server->recv_ctx->watcher);
-            ev_io_start(EV_A_ & server->recv_ctx->io);
-            return;
+    struct dscptracker *tracker = server->tracker;
+    if (tracker && tracker->ct) {
+        // Trying query mark from nf conntrack
+        struct nfct_handle *h = nfct_open(CONNTRACK, 0);
+        if (h) {
+            nfct_callback_register(h, NFCT_T_ALL, setMarkDscpCallback, (void *)server);
+            int x = nfct_query(h, NFCT_Q_GET, tracker->ct);
+            if (x == -1) {
+                LOGE("QOS: Failed to retrieve connection mark %s", strerror(errno));
+            }
+            nfct_close(h);
+        } else {
+            LOGE("QOS: Failed to open conntrack handle for upstream netfilter mark retrieval.");
         }
-        if (verbose)
-            LOGI("current server connection: %d", server_conn--);
-        ev_timer_stop(EV_A_ & server->recv_ctx->watcher);
-#endif
-        ev_io_stop(EV_A_ & server->recv_ctx->io);
-        close(server->fd);
-        free_server(server);
     }
 }
+
+void
+setTosFromConnmark(remote_t *remote, server_t *server)
+{
+    if (server->tracker && server->tracker->ct) {
+        if (server->tracker->mark == 0 && server->tracker->packet_count < MARK_MAX_PACKET) {
+            server->tracker->packet_count++;
+            conntrackQuery(server);
+        }
+    } else {
+        struct sockaddr_storage sin;
+        if (getsockname(remote->fd, (struct sockaddr *)&sin, &(socklen_t) { sizeof(sin) }) == 0) {
+            struct sockaddr_storage from_addr;
+            if (getpeername(remote->fd, (struct sockaddr *)&from_addr, &(socklen_t) { sizeof(from_addr) }) == 0) {
+                if ((server->tracker = (struct dscptracker *)ss_malloc(sizeof(struct dscptracker)))) {
+                    if ((server->tracker->ct = nfct_new())) {
+                        // Build conntrack query SELECT
+                        if (from_addr.ss_family == AF_INET) {
+                            struct sockaddr_in *src = (struct sockaddr_in *)&from_addr;
+                            struct sockaddr_in *dst = (struct sockaddr_in *)&sin;
+
+                            nfct_set_attr_u8(server->tracker->ct, ATTR_L3PROTO, AF_INET);
+                            nfct_set_attr_u32(server->tracker->ct, ATTR_IPV4_DST, dst->sin_addr.s_addr);
+                            nfct_set_attr_u32(server->tracker->ct, ATTR_IPV4_SRC, src->sin_addr.s_addr);
+                            nfct_set_attr_u16(server->tracker->ct, ATTR_PORT_DST, dst->sin_port);
+                            nfct_set_attr_u16(server->tracker->ct, ATTR_PORT_SRC, src->sin_port);
+                        } else if (from_addr.ss_family == AF_INET6) {
+                            struct sockaddr_in6 *src = (struct sockaddr_in6 *)&from_addr;
+                            struct sockaddr_in6 *dst = (struct sockaddr_in6 *)&sin;
+
+                            nfct_set_attr_u8(server->tracker->ct, ATTR_L3PROTO, AF_INET6);
+                            nfct_set_attr(server->tracker->ct, ATTR_IPV6_DST, dst->sin6_addr.s6_addr);
+                            nfct_set_attr(server->tracker->ct, ATTR_IPV6_SRC, src->sin6_addr.s6_addr);
+                            nfct_set_attr_u16(server->tracker->ct, ATTR_PORT_DST, dst->sin6_port);
+                            nfct_set_attr_u16(server->tracker->ct, ATTR_PORT_SRC, src->sin6_port);
+                        }
+                        nfct_set_attr_u8(server->tracker->ct, ATTR_L4PROTO, IPPROTO_TCP);
+                        conntrackQuery(server);
+                    } else {
+                        LOGE("Failed to allocate new conntrack for upstream netfilter mark retrieval.");
+                        server->tracker->ct = NULL;
+                    }
+                }
+            }
+        }
+    }
+}
+
+#endif
+#endif
 
 void
 free_connections(struct ev_loop *loop)
@@ -975,7 +1087,7 @@ start_relay(jconf_t *conf,
         if (conf->reuse_conn) {
             remote_cnf_t *remote_cnf = listen_ctx->remotes[i];
             cork_array_init(remote_cnf->remotes =
-                            ss_malloc(sizeof(remote_cnf->remotes)));
+                            ss_malloc(sizeof(*remote_cnf->remotes)));
         }
     }
 

@@ -29,6 +29,7 @@
 #define _CACHE_
 
 #include "uthash.h"
+#include "utstack.h"
 
 #ifdef HAVE_LIBEV_EV_H
 #include <libev/ev.h>
@@ -37,9 +38,7 @@
 #endif
 
 typedef void (*cache_free_cb)(void *, void *);
-/**
- * A cache entry
- */
+/* A cache entry */
 struct cache_entry {
     void *key;         /**< Key         */
     void *value;       /**< Payload     */
@@ -47,18 +46,15 @@ struct cache_entry {
     UT_hash_handle hh; /**< Hash Handle */
 };
 
-/**
- * A cache object
- */
+/* A cache object */
 struct cache {
     size_t max_entries;              /**< Maximum number of entries      */
     struct cache_entry *entries;     /**< Head pointer                   */
     cache_free_cb free_cb;           /**< Function to free cache entries */
 };
 
-#define cache_foreach(cache, entry)    \
-    struct cache_entry *tmp;           \
-    HASH_ITER(hh, (cache)->entries, (entry), (tmp))
+/* A list entry */
+#define list_element(T) T *prev, *next
 
 struct cache *new_cache(const size_t, cache_free_cb);
 int cache_create(struct cache **, const size_t, cache_free_cb);
@@ -68,7 +64,22 @@ int cache_free(struct cache *, struct cache_entry *);
 int cache_lookup(struct cache *, void *, size_t, void *);
 int cache_insert(struct cache *, void *, size_t, void *);
 int cache_remove(struct cache *, void *, size_t);
+int cache_remove_r(struct cache *, struct cache_entry *);
 int cache_key_exist(struct cache *, void *, size_t);
 void *cache_popfront(struct cache *, bool);
+
+#define cache_head(cache) cache->entries
+#define cache_foreach(cache, element)    \
+    struct cache_entry *tmp;           \
+    HASH_ITER(hh, (cache)->entries, (element), (tmp))
+
+#define stack_push  STACK_PUSH
+#define stack_pop   STACK_POP
+#define stack_empty STACK_EMPTY
+
+#define uniqset_add(cache, element) \
+    cache_insert(cache, &element, sizeof(element), NULL)
+#define uniqset_remove(cache, element) \
+    cache_remove(cache, &element, sizeof(element))
 
 #endif
