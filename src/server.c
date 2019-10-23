@@ -65,7 +65,8 @@ report_addr(EV_P_ server_t *server, const char *info)
 {
     if (verbose) {
         struct sockaddr_storage addr = {};
-        if (getpeername(server->fd, (struct sockaddr *)&addr, &(socklen_t) { sizeof(addr) }) == 0) {
+        if (getpeername(server->fd, (struct sockaddr *)&addr,
+                &(socklen_t) { sizeof(addr) }) == 0) {
             LOGE("failed to handshake with %s: %s", sockaddr_readable("%a", &addr), info);
         }
     }
@@ -77,17 +78,11 @@ report_addr(EV_P_ server_t *server, const char *info)
 static void
 resolv_cb(struct sockaddr *addr, void *data)
 {
-    server_t *server = (server_t *)data;
-    if (server == NULL)
+    remote_t *remote = (remote_t *)data;
+    if (remote == NULL)
         return;
 
-    remote_t *remote     = server->remote;
-    struct ev_loop *loop = server->listen_ctx->loop;
-
-    if (remote == NULL) {
-        close_and_free_server(EV_A_ server);
-        return;
-    }
+    server_t *server = remote->server;
 
     if (addr == NULL) {
         close_and_free_remote(EV_A_ remote);
@@ -103,8 +98,10 @@ resolv_cb(struct sockaddr *addr, void *data)
         } else {
             // listen to remote connected event
             if (server->stage == STAGE_MULTIPLEX &&
-                cache_insert(server->remotes,
-                    &remote->cid, sizeof(remote->cid), remote)) {
+                cache_replace(server->remotes,
+                    &remote->cid, sizeof(remote->cid), remote)
+            ) {
+                LOGE("invalid session");
                 close_and_free_remote(EV_A_ remote);
                 close_and_free_server(EV_A_ server);
                 return;
@@ -120,22 +117,20 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
     server_ctx_t *server_recv_ctx = (server_ctx_t *)w;
     server_t *server = server_recv_ctx->server;
     crypto_t *crypto = server->crypto;
-    remote_t *remote = elvis(server->remote, new_remote(server));
+    remote_t *remote = server->remote;
 
     buffer_t *buf = server->buf;
     ssize_t r = recv(server->fd, buf->data, SOCKET_BUF_SIZE, 0);
 
     if (r == 0) {
-        if (server->stage != STAGE_MULTIPLEX) {
-            // connection closed
-            if (verbose) {
-                LOGI("server_recv closing the connection");
-            }
+        // connection closed
+        if (verbose) {
+            LOGI("server_recv closing the connection");
+        }
 
-            server->stage = STAGE_TIMEOUT;
-            close_and_free_remote(EV_A_ remote);
-            close_and_free_server(EV_A_ server);
-        }        
+        server->stage = STAGE_TIMEOUT;
+        close_and_free_remote(EV_A_ remote);
+        close_and_free_server(EV_A_ server);
         return;
     } else if (r == -1) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -179,26 +174,22 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             int offset = parse_ssocks_header(buf, &destaddr, 0);
 
             if (offset < 0 || buf->len < offset) {
-            LOGE("len %d idx %d", (int)server->buf->len, (int)server->buf->idx);
-            LOGE("atyp %d id %d", (uint8_t)server->buf->data[0], (uint8_t)server->buf->data[1]);
+                LOGE("len %d idx %d", (int)server->buf->len, (int)server->buf->idx);
+                LOGE("atyp %d id %d", (uint8_t)server->buf->data[0], (uint8_t)server->buf->data[1]);
 
                 report_addr(EV_A_ server, "invalid request");
                 return;
             }
 
-            if (reuse_conn) {
-                if (destaddr.id &&
-                    server->stage != STAGE_MULTIPLEX)
-                {
-                    server->stage = STAGE_MULTIPLEX;
-                }
-            } else {
-                if (destaddr.id) {
+            if (destaddr.id) {
+                if (reuse_conn) {
+                    if (server->stage != STAGE_MULTIPLEX)
+                        server->stage = STAGE_MULTIPLEX;
+                } else {
                     LOGE("connection multiplexing not enabled");
                     close_and_free_server(EV_A_ server);
                     return;
                 }
-                server->remote = remote;
             }
 
             buf->len -= offset;
@@ -218,14 +209,16 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                     LOGI("connecting to %s:%d", destaddr.dname, ntohs(destaddr.port));
                 }
 
+                remote = new_remote(server);
                 if (server->stage == STAGE_MULTIPLEX) {
                     remote->cid = destaddr.id;
                 } else {
-                    server->stage = STAGE_RESOLVE;
+                    server->remote = remote;
+                    server->stage  = STAGE_RESOLVE;
                     ev_io_stop(EV_A_ & server_recv_ctx->io);
                 }
 
-                resolv_start(destaddr.dname, destaddr.port, resolv_cb, NULL, server);
+                resolv_start(destaddr.dname, destaddr.port, resolv_cb, NULL, remote);
             } else if (destaddr.addr) {
                 if (acl && search_acl(ACL_ATYP_IP, destaddr.addr, ACL_BLOCKLIST)) {
                     if (verbose)
@@ -239,18 +232,19 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                          sockaddr_readable("%a:%p", destaddr.addr));
                 }
 
+                remote = new_remote(server);
                 if (server->stage == STAGE_MULTIPLEX) {
                     remote->cid = destaddr.id;
                 } else {
+                    server->remote = remote;
                     ev_io_stop(EV_A_ & server_recv_ctx->io);
                 }
 
-                resolv_cb((struct sockaddr *)destaddr.addr, server);
+                resolv_cb((struct sockaddr *)destaddr.addr, remote);
             } else {
                 if (server->stage == STAGE_MULTIPLEX && destaddr.id) {
                     if (cache_lookup(server->remotes,
                             &destaddr.id, sizeof(destaddr.id), &remote)) {
-                        close_and_free_remote(EV_A_ remote);
                         close_and_free_server(EV_A_ server);
                         return;
                     }
@@ -259,8 +253,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             }
         } return;
         case STAGE_STREAM:
-        TAG_STAGE_STREAM:
-        {
+        TAG_STAGE_STREAM: {
             ev_timer_again(EV_A_ & server->recv_ctx->watcher);
 
             int s = send(remote->fd, buf->data, buf->len, 0);
@@ -268,7 +261,8 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                 if (errno == EAGAIN || errno == EWOULDBLOCK) {
                     // no data, wait for send
                     buf->idx = 0;
-                    ev_io_stop(EV_A_ & server_recv_ctx->io);
+                    if (server->stage != STAGE_MULTIPLEX)
+                        ev_io_stop(EV_A_ & server_recv_ctx->io);
                     ev_io_start(EV_A_ & remote->send_ctx->io);
                 } else {
                     ERROR("server_recv_send");
@@ -278,7 +272,8 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             } else if (s < buf->len) {
                 buf->len -= s;
                 buf->idx += s;
-                ev_io_stop(EV_A_ & server_recv_ctx->io);
+                if (server->stage != STAGE_MULTIPLEX)
+                    ev_io_stop(EV_A_ & server_recv_ctx->io);
                 ev_io_start(EV_A_ & remote->send_ctx->io);
             }
         } return;
@@ -292,17 +287,17 @@ server_send_cb(EV_P_ ev_io *w, int revents)
 {
     server_ctx_t *server_send_ctx = (server_ctx_t *)w;
     server_t *server              = server_send_ctx->server;
-    remote_t *remote              = server->remote;
 
+    remote_t *remote;
     struct cache_entry *lremote = NULL;
     if (server->stage == STAGE_MULTIPLEX) {
-        lremote = cache_head(server_send_ctx->remotes);
-        if (!lremote) {
+        if (!(lremote =
+                cache_head(server_send_ctx->remotes))) {
             ev_io_stop(EV_A_ & server_send_ctx->io);
             return;
         }
-        remote = *(remote_t **)lremote->key;
-    }
+        remote = *(remote_t **)uniqset_element(lremote);
+    } else remote = server->remote;
 
     if (remote == NULL) {
         LOGE("invalid server");
@@ -328,7 +323,7 @@ server_send_cb(EV_P_ ev_io *w, int revents)
                 server->stage = STAGE_ERROR;
                 close_and_free_remote(EV_A_ remote);
                 close_and_free_server(EV_A_ server);
-            }         
+            }
         } else if (s < remote->buf->len) {
             // partly sent, move memory, wait for the next time to send
             remote->buf->len -= s;
@@ -347,6 +342,7 @@ server_send_cb(EV_P_ ev_io *w, int revents)
                     LOGE("failed to remove session");
                     close_and_free_remote(EV_A_ remote);
                     close_and_free_server(EV_A_ server);
+                    return;
                 }
             } else
                 ev_io_stop(EV_A_ & server_send_ctx->io);
@@ -368,7 +364,6 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
     remote_ctx_t *remote_recv_ctx = (remote_ctx_t *)w;
     remote_t *remote              = remote_recv_ctx->remote;
     server_t *server              = remote->server;
-    crypto_t *crypto              = server->crypto;
 
     if (server == NULL) {
         LOGE("invalid server");
@@ -376,6 +371,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
         return;
     }
 
+    crypto_t *crypto = server->crypto;
     ev_timer_again(EV_A_ & server->recv_ctx->watcher);
 
     if (server->stage == STAGE_MULTIPLEX) {
@@ -386,6 +382,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
             abuf->data[abuf->len++] =
             remote->buf->data[remote->buf->len++] = remote->cid;
 
+            // TODO fixme
             int err = crypto->encrypt(abuf, server->e_ctx, abuf->capacity);
 
             if (err) {
@@ -489,7 +486,8 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
             remote_send_ctx->connected = 1;
 
             if (server->buf->len == 0) {
-                server->stage = STAGE_STREAM;
+                if (server->stage != STAGE_MULTIPLEX)
+                    server->stage = STAGE_STREAM;
                 ev_io_stop(EV_A_ & remote_send_ctx->io);
                 ev_io_start(EV_A_ & server->recv_ctx->io);
                 ev_io_start(EV_A_ & remote->recv_ctx->io);
@@ -537,8 +535,9 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
                 if (server->stage != STAGE_STREAM &&
                     server->stage != STAGE_MULTIPLEX) {
                     server->stage = STAGE_STREAM;
-                    ev_io_start(EV_A_ & remote->recv_ctx->io);
                 }
+
+                ev_io_start(EV_A_ & remote->recv_ctx->io);
             } else {
                 LOGE("invalid server");
                 close_and_free_remote(EV_A_ remote);

@@ -132,8 +132,6 @@ resolv_cb(struct sockaddr *addr, void *data)
     if (server == NULL)
         return;
 
-    struct ev_loop *loop = server->listen_ctx->loop;
-
     if (addr == NULL) {
         LOGE("[udp] unable to resolve");
         close_and_free_remote(EV_A_ remote);
@@ -760,10 +758,10 @@ init_udprelay(EV_P_ listen_ctx_t *listener)
 }
 
 void
-free_udprelay(struct ev_loop *loop)
+free_udprelay()
 {
     while (server_num > 0) {
-        close_and_free_server(loop, servers[--server_num]);
+        close_and_free_server(EV_A_ servers[--server_num]);
         servers[server_num] = NULL;
     }
 }

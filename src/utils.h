@@ -209,7 +209,7 @@ int set_nofile(int nofile);
 #define ss_aligned_free(ptr) ss_free(ptr)
 #endif
 
-inline void *
+static inline void *
 ss_malloc(size_t size)
 {
     void *tmp = malloc(size);
@@ -218,7 +218,7 @@ ss_malloc(size_t size)
     return tmp;
 }
 
-inline void *
+static inline void *
 ss_aligned_malloc(size_t size)
 {
     int err;
@@ -235,7 +235,7 @@ ss_aligned_malloc(size_t size)
     return err ? ss_malloc(size) : tmp;
 }
 
-inline void *
+static inline void *
 ss_realloc(void *ptr, size_t new_size)
 {
     void *new = realloc(ptr, new_size);
@@ -248,7 +248,7 @@ ss_realloc(void *ptr, size_t new_size)
     return new;
 }
 
-inline void *
+static inline void *
 ss_calloc(size_t num, size_t size)
 {
     void *tmp = calloc(num, size);
@@ -257,7 +257,7 @@ ss_calloc(size_t num, size_t size)
     return tmp;
 }
 
-inline void *
+static inline void *
 memdup(const void* src, size_t len)
 {
     void *new = ss_malloc(len);
@@ -311,19 +311,20 @@ currtime_readable()
     struct cork_dllist_item *i = cork_dllist_head(dst);      \
     if (i != NULL) {                                         \
         element = cork_container_of(i,                       \
-                    __typeof__(*(element)), (entries));      \
-        if (remove) cork_dllist_remove(&element->(entries)); \
+                    __typeof__(*element), entries);          \
+        if (remove) cork_dllist_remove(&element->entries);   \
     }                                                        \
 }
 
 #define cork_dllist_each(dst, element, entries)  \
     struct cork_dllist_item *curr, *next;        \
-    cork_dllist_foreach((dst), curr, next, __typeof__(*(element)), (element), (entries))
+    cork_dllist_foreach(dst, curr, next, __typeof__(*(element)), element, entries)
 
 #define cork_dllist_poll(dst, element, entries)  \
-    cork_dllist_each(dst, element, entries) if (rand() & 1) break;
+    if (cork_dllist_is_empty(dst)) element = NULL; \
+    else { cork_dllist_each(dst, element, entries) if (rand() & 1) break; } \
 
-inline void
+static inline void
 cork_dllist_merge(struct cork_dllist *dst, struct cork_dllist *src)
 {
     struct cork_dllist_item *curr, *next;

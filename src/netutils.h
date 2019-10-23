@@ -148,12 +148,9 @@ typedef struct {
 struct cache *port_cache;
 
 static const ss_service_t service_ports[] = {
-    { .service = PORT_DOMAIN_SERVICE,
-      .ports = (char *[]) { "domain", NULL }            },
-    { .service = PORT_HTTP_SERVICE,
-      .ports = (char *[]) { "http", "http-alt", NULL }  },
-    { .service = PORT_HTTPS_SERVICE,
-      .ports = (char *[]) { "https", NULL }             },
+    { PORT_DOMAIN_SERVICE, (char *[]) { "domain", NULL }            },
+    { PORT_HTTP_SERVICE,   (char *[]) { "http", "http-alt", NULL }  },
+    { PORT_HTTPS_SERVICE,  (char *[]) { "https", NULL }             },
     { }
 };
 

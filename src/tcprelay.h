@@ -1,5 +1,5 @@
 /*
- * relay.h - Define TCP relay's buffers and callbacks
+ * tcprelay.h - Define TCP relay's buffers and callbacks
  *
  * Copyright (C) 2013 - 2019, Max Lv <max.c.lv@gmail.com>
  *
@@ -61,6 +61,14 @@ void free_remote(remote_t *remote);
 void close_and_free_remote(EV_P_ remote_t *remote);
 void free_server(server_t *server);
 void close_and_free_server(EV_P_ server_t *server);
+static inline void
+remote_free_cb(void *id, void *remote) {
+    close_and_free_remote(EV_A_ (remote_t *)remote);
+}
+static inline void
+server_free_cb(void *id, void *server) {
+    close_and_free_server(EV_A_ (server_t *)server);
+}
 
 int remote_connected(remote_t *);
 
@@ -79,6 +87,6 @@ remote_t *create_remote(EV_P_ server_t *, buffer_t *,
 int start_relay(jconf_t *, ss_callback_t, void *);
 
 void init_udprelay(EV_P_ listen_ctx_t *);
-void free_udprelay(struct ev_loop *);
+void free_udprelay();
 
 #endif // _RELAY_H

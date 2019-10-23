@@ -57,6 +57,7 @@ extern int
 #endif
 #endif
 
+extern struct ev_loop *loop;
 static const int
     MIN_TCP_IDLE_TIMEOUT = 24 * 3600;
 
@@ -118,9 +119,6 @@ typedef struct server {
 #ifdef USE_NFCONNTRACK_TOS
     struct dscptracker *tracker;
 #endif
-#elif defined MODULE_LOCAL
-    //struct cork_dllist_item queue;
-    list_element(struct server);
 #endif
 
     struct cork_dllist_item entries;
@@ -153,8 +151,6 @@ typedef struct remote {
     struct cache *servers;
 #elif defined MODULE_REMOTE
     int cid;
-    //struct cork_dllist_item queue;
-    list_element(struct remote);
 #endif
 
     struct remote_ctx *recv_ctx;
@@ -163,6 +159,7 @@ typedef struct remote {
     struct sockaddr_storage *addr;
     struct cork_dllist_item entries;
 } remote_t;
+
 #elif defined MODULE_CTX_UDP // MODULE_CTX_UDP /////////////
 #ifdef MODULE_REMOTE
 typedef struct query {
@@ -198,6 +195,7 @@ typedef struct remote {
     struct cork_dllist_item entries;
     struct sockaddr *saddr;
 } remote_t;
+
 #endif ///////////////////////////////
 
 typedef struct remote_cnf {
@@ -205,8 +203,7 @@ typedef struct remote_cnf {
     crypto_t *crypto;
     struct sockaddr_storage *addr;
 #ifdef MODULE_CTX_TCP
-    cork_array(remote_t *) *remotes;
-    //struct cork_dllist *remotes;
+    struct cork_dllist *remotes;
 #endif
 } remote_cnf_t;
 
@@ -232,16 +229,16 @@ typedef struct listen_ctx {
     ev_timer stat_watcher;
 #endif
     struct cork_dllist_item entries;
-    struct ev_loop *loop;
+    //struct ev_loop *loop;
 #endif
     struct sockaddr_storage *addr;
 } listen_ctx_t;
 
 #define ev_callback_f(T, declname)  \
-    typedef void (declname)(EV_P_ T *, int)
+    void (declname)(EV_P_ T *, int)
 
-ev_callback_f(ev_io, ev_io_callback);
-ev_callback_f(ev_timer, ev_timer_callback);
+typedef ev_callback_f(ev_io, ev_io_callback);
+typedef ev_callback_f(ev_timer, ev_timer_callback);
 
 int create_and_bind(struct sockaddr_storage *, int, listen_ctx_t *);
 int bind_and_listen(struct sockaddr_storage *, int, listen_ctx_t *);

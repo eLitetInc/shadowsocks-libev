@@ -73,7 +73,7 @@
  */
 
 enum {
-    NONE = -1,
+    NONE,
     TABLE,
     RC4,
     RC4_MD5,
@@ -97,61 +97,41 @@ enum {
     CHACHA20IETF
 } methods;
 
-const char *supported_stream_ciphers[STREAM_CIPHER_NUM] = {
-    "table",
-    "rc4",
-    "rc4-md5",
-    "aes-128-cfb",
-    "aes-192-cfb",
-    "aes-256-cfb",
-    "aes-128-ctr",
-    "aes-192-ctr",
-    "aes-256-ctr",
-    "bf-cfb",
-    "camellia-128-cfb",
-    "camellia-192-cfb",
-    "camellia-256-cfb",
-    "cast5-cfb",
-    "des-cfb",
-    "idea-cfb",
-    "rc2-cfb",
-    "seed-cfb",
-    "salsa20",
-    "chacha20",
-    "chacha20-ietf"
-};
+typedef struct cipher_info {
+    const int method;
+    const char *name;
+    const char *name_mbedtls;
+    const int nonce_size, key_size;
+} cipher_info_t;
 
-static const char *supported_stream_ciphers_mbedtls[STREAM_CIPHER_NUM] = {
-    "table",
-    "ARC4-128",
-    "ARC4-128",
-    "AES-128-CFB128",
-    "AES-192-CFB128",
-    "AES-256-CFB128",
-    "AES-128-CTR",
-    "AES-192-CTR",
-    "AES-256-CTR",
-    "BLOWFISH-CFB64",
-    "CAMELLIA-128-CFB128",
-    "CAMELLIA-192-CFB128",
-    "CAMELLIA-256-CFB128",
-    CIPHER_UNSUPPORTED,
-    CIPHER_UNSUPPORTED,
-    CIPHER_UNSUPPORTED,
-    CIPHER_UNSUPPORTED,
-    CIPHER_UNSUPPORTED,
-    "salsa20",
-    "chacha20",
-    "chacha20-ietf"
+static const cipher_info_t
+supported_ciphers[] = {
+    {   NONE,             "none",             NULL,                  0,  0    },
+    {   TABLE,            "table",            "table",               0,  0    },
+    {   RC4,              "rc4",              "ARC4-128",            0,  16   },
+    {   RC4_MD5,          "rc4-md5",          "ARC4-128",            16, 16   },
+    {   AES_128_CFB,      "aes-128-cfb",      "AES-128-CFB128",      16, 16   },
+    {   AES_192_CFB,      "aes-192-cfb",      "AES-192-CFB128",      16, 24   },
+    {   AES_256_CFB,      "aes-256-cfb",      "AES-256-CFB128",      16, 32   },
+    {   AES_128_CTR,      "aes-128-ctr",      "AES-128-CTR",         16, 16   },
+    {   AES_192_CTR,      "aes-192-ctr",      "AES-192-CTR",         16, 24   },
+    {   AES_256_CTR,      "aes-256-ctr",      "AES-256-CTR",         16, 32   },
+    {   BF_CFB,           "bf-cfb",           "BLOWFISH-CFB64",      8,  16   },
+    {   CAMELLIA_128_CFB, "camellia-128-cfb", "CAMELLIA-128-CFB128", 16, 16   },
+    {   CAMELLIA_192_CFB, "camellia-192-cfb", "CAMELLIA-192-CFB128", 16, 24   },
+    {   CAMELLIA_256_CFB, "camellia-256-cfb", "CAMELLIA-256-CFB128", 16, 32   },
+    {   CAST5_CFB,        "cast5-cfb",        CIPHER_UNSUPPORTED,    8,  16   },
+    {   DES_CFB,          "des-cfb",          CIPHER_UNSUPPORTED,    8,  8    },
+    {   IDEA_CFB,         "idea-cfb",         CIPHER_UNSUPPORTED,    8,  16   },
+    {   RC2_CFB,          "rc2-cfb",          CIPHER_UNSUPPORTED,    8,  16   },
+    {   SEED_CFB,         "seed-cfb",         CIPHER_UNSUPPORTED,    16, 16   },
+    {   SALSA20,          "salsa20",          "salsa20",             8,  32   },
+    {   CHACHA20,         "chacha20",         "chacha20",            8,  32   },
+    {   CHACHA20IETF,     "chacha20-ietf",    "chacha20-ietf",       12, 32   },
+    {   NONE,             NULL,               NULL,                  0,  0    },
 };
-
-static const int supported_stream_ciphers_nonce_size[STREAM_CIPHER_NUM] = {
-    0, 0, 16, 16, 16, 16, 16, 16, 16, 8, 16, 16, 16, 8, 8, 8, 8, 16, 8, 8, 12
-};
-
-static const int supported_stream_ciphers_key_size[STREAM_CIPHER_NUM] = {
-    0, 16, 16, 16, 24, 32, 16, 24, 32, 16, 16, 24, 32, 16, 8, 16, 16, 16, 32, 32, 32
-};
+static const int
+STREAM_CIPHER_NUM = sizeof(supported_ciphers) - 1;
 
 static int
 crypto_stream_xor_ic(uint8_t *c, const uint8_t *m, uint64_t mlen,
@@ -173,10 +153,7 @@ crypto_stream_xor_ic(uint8_t *c, const uint8_t *m, uint64_t mlen,
 int
 cipher_nonce_size(const cipher_t *cipher)
 {
-    if (cipher == NULL) {
-        return 0;
-    }
-    return cipher->info->iv_size;
+    return cipher ? cipher->info->iv_size : 0;
 }
 
 int
@@ -189,17 +166,17 @@ cipher_key_size(const cipher_t *cipher)
      * Changed md_info_t into an opaque structure (use md_get_xxx() accessors).
      * Changed pk_info_t into an opaque structure.
      * Changed cipher_base_t into an opaque structure.
+     *
+     * From Version 1.2.7 released 2013-04-13 Default Blowfish keysize is now 128-bits
      */
-    if (cipher == NULL) {
-        return 0;
-    }
-    /* From Version 1.2.7 released 2013-04-13 Default Blowfish keysize is now 128-bits */
-    return cipher->info->key_bitlen / 8;
+    return cipher ? cipher->info->key_bitlen / 8 : 0;
 }
 
 const cipher_kt_t *
-stream_get_cipher_type(int method)
+stream_get_cipher_type(const cipher_info_t *profile)
 {
+    int method = profile->method;
+
     if (method <= TABLE || method >= STREAM_CIPHER_NUM) {
         LOGE("stream_get_cipher_type(): Illegal method");
         return NULL;
@@ -213,20 +190,18 @@ stream_get_cipher_type(int method)
         return NULL;
     }
 
-    const char *ciphername  = supported_stream_ciphers[method];
-    const char *mbedtlsname = supported_stream_ciphers_mbedtls[method];
-    if (strcmp(mbedtlsname, CIPHER_UNSUPPORTED) == 0) {
-        LOGE("Cipher %s currently is not supported by mbed TLS library",
-             ciphername);
+    if (strcmp(profile->name, CIPHER_UNSUPPORTED) == 0) {
+        LOGE("cipher %s currently is not supported by mbedTLS library",
+             profile->name);
         return NULL;
     }
-    return mbedtls_cipher_info_from_string(mbedtlsname);
+    return mbedtls_cipher_info_from_string(profile->name_mbedtls);
 }
 
 void
 stream_cipher_ctx_init(cipher_ctx_t *ctx, int method, int enc)
 {
-    if (method <= TABLE || method >= STREAM_CIPHER_NUM) {
+    if (method >= STREAM_CIPHER_NUM) {
         LOGE("stream_ctx_init(): Illegal method");
         return;
     }
@@ -235,11 +210,10 @@ stream_cipher_ctx_init(cipher_ctx_t *ctx, int method, int enc)
         return;
     }
 
-    const char *ciphername    = supported_stream_ciphers[method];
-    const cipher_kt_t *cipher = stream_get_cipher_type(method);
+    const cipher_kt_t *cipher = stream_get_cipher_type(&supported_ciphers[method]);
 
     if (cipher == NULL) {
-        LOGE("Cipher %s not found in mbed TLS library", ciphername);
+        LOGE("Cipher %s not found in mbed TLS library", supported_ciphers[method].name);
         FATAL("Cannot initialize mbed TLS cipher");
     }
 
@@ -321,14 +295,15 @@ static int
 cipher_ctx_update(cipher_ctx_t *ctx, uint8_t *output, size_t *olen,
                   const uint8_t *input, size_t ilen)
 {
-    cipher_evp_t *evp = ctx->evp;
-    return mbedtls_cipher_update(evp, (const uint8_t *)input, ilen,
-                                 (uint8_t *)output, olen);
+    return mbedtls_cipher_update(ctx->evp, input, ilen, output, olen);
 }
 
 int
 stream_encrypt_all(buffer_t *plaintext, cipher_t *cipher, size_t capacity)
 {
+    if (cipher->method == NONE)
+        return CRYPTO_OK;
+
     cipher_ctx_t cipher_ctx;
     stream_ctx_init(cipher, &cipher_ctx, 1);
 
@@ -384,10 +359,12 @@ stream_encrypt(buffer_t *plaintext, cipher_ctx_t *cipher_ctx, size_t capacity)
         return CRYPTO_ERROR;
 
     cipher_t *cipher = cipher_ctx->cipher;
+    if (cipher->method == NONE)
+        return CRYPTO_OK;
 
     static buffer_t tmp = { 0, 0, 0, NULL };
 
-    int err          = CRYPTO_OK;
+    int err = CRYPTO_OK;
     size_t nonce_len = 0;
     if (!cipher_ctx->init) {
         nonce_len = cipher_ctx->cipher->nonce_len;
@@ -452,6 +429,9 @@ stream_encrypt(buffer_t *plaintext, cipher_ctx_t *cipher_ctx, size_t capacity)
 int
 stream_decrypt_all(buffer_t *ciphertext, cipher_t *cipher, size_t capacity)
 {
+    if (cipher->method == NONE)
+        return CRYPTO_OK;
+
     size_t nonce_len = cipher->nonce_len;
     int err          = CRYPTO_OK;
 
@@ -515,6 +495,8 @@ stream_decrypt(buffer_t *ciphertext, cipher_ctx_t *cipher_ctx, size_t capacity)
         return CRYPTO_ERROR;
 
     cipher_t *cipher = cipher_ctx->cipher;
+    if (cipher->method == NONE)
+        return CRYPTO_OK;
 
     static buffer_t tmp = { 0, 0, 0, NULL };
 
@@ -622,37 +604,45 @@ void
 stream_ctx_init(cipher_t *cipher, cipher_ctx_t *cipher_ctx, int enc)
 {
     sodium_memzero(cipher_ctx, sizeof(cipher_ctx_t));
-    stream_cipher_ctx_init(cipher_ctx, cipher->method, enc);
-    cipher_ctx->cipher = cipher;
-
-    if (enc) {
-        rand_bytes(cipher_ctx->nonce, cipher->nonce_len);
+    if (cipher->method != NONE) {
+        stream_cipher_ctx_init(cipher_ctx, cipher->method, enc);
+        if (enc)
+            rand_bytes(cipher_ctx->nonce, cipher->nonce_len);
     }
+
+    cipher_ctx->cipher = cipher;
 }
 
 cipher_t *
-stream_key_init(int method, const char *pass, const char *key)
+stream_key_init(const cipher_info_t *profile, const char *pass, const char *key)
 {
-    if (method <= TABLE || method >= STREAM_CIPHER_NUM) {
+    int method = profile->method;
+
+    if (method >= STREAM_CIPHER_NUM) {
         LOGE("cipher->key_init(): Illegal method");
         return NULL;
     }
 
-    cipher_t *cipher = (cipher_t *)ss_malloc(sizeof(cipher_t));
-    memset(cipher, 0, sizeof(cipher_t));
+    cipher_t *cipher = ss_calloc(1, sizeof(*cipher));
+    if (method == NONE) {
+        cipher->method = method;
+        return cipher;
+    }
 
-    if (method == SALSA20 || method == CHACHA20 || method == CHACHA20IETF) {
-        cipher_kt_t *cipher_info = (cipher_kt_t *)ss_malloc(sizeof(cipher_kt_t));
-        cipher->info             = cipher_info;
-        cipher->info->base       = NULL;
-        cipher->info->key_bitlen = supported_stream_ciphers_key_size[method] * 8;
-        cipher->info->iv_size    = supported_stream_ciphers_nonce_size[method];
+    if (method == SALSA20 || method == CHACHA20 ||
+        method == CHACHA20IETF)
+    {
+        cipher->info = ss_new(cipher_kt_t, {
+            .base = NULL,
+            .key_bitlen = profile->key_size * 8,
+            .iv_size = profile->nonce_size,
+        });
     } else {
-        cipher->info = (cipher_kt_t *)stream_get_cipher_type(method);
+        cipher->info = (cipher_kt_t *)stream_get_cipher_type(profile);
     }
 
     if (cipher->info == NULL && cipher->key_len == 0) {
-        LOGE("Cipher %s not found in crypto library", supported_stream_ciphers[method]);
+        LOGE("Cipher %s not found in crypto library", profile->name);
         FATAL("Cannot initialize cipher");
     }
 
@@ -677,20 +667,21 @@ stream_key_init(int method, const char *pass, const char *key)
 cipher_t *
 stream_init(const char *pass, const char *key, const char *method)
 {
-    int m = TABLE;
+    const cipher_info_t *p = supported_ciphers, *profile = NULL;
+
     if (method != NULL) {
-        for (m = TABLE; m < STREAM_CIPHER_NUM; m++)
-            if (strcmp(method, supported_stream_ciphers[m]) == 0) {
-                break;
+        do {
+            if (strcmp(method, p->name) == 0) {
+                profile = p; break;
             }
-        if (m >= STREAM_CIPHER_NUM) {
-            LOGE("Invalid cipher name: %s, use chacha20-ietf instead", method);
-            m = CHACHA20IETF;
-        }
+        } while ((++p)->name);
+
+        if (!profile) return NULL;
     }
-    if (m == TABLE) {
-        LOGE("Table is deprecated");
+
+    if (p->method == TABLE) {
+        LOGE("cipher %s is deprecated", p->name);
         return NULL;
     }
-    return stream_key_init(m, pass, key);
+    return stream_key_init(p, pass, key);
 }

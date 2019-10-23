@@ -64,6 +64,9 @@ typedef struct ssocks_mux {
     uint8_t atyp, id;
 } PACKED ssocks_mux_t;
 #define ssocks_mux_hdr(id) (ssocks_mux_t) { .atyp = SSOCKS_ATYP_MUX, .id = id }
+#define ssocks_readable(destaddr) \
+    (destaddr)->dname ? hostname_readable((destaddr)->dname, (destaddr)->dname_len, (destaddr)->port) : \
+                        sockaddr_readable("%a:%p", (destaddr)->addr)
 
 #define MAX_HOSTNAME_LEN 256
 static const int SSOCKS_HDR_SIZE =
@@ -104,13 +107,12 @@ int new_shadowsocks_(ssocks_module_t module, jconf_t *conf,
  *
  * If failed, -1 is returned. Errors will output to the log file.
  */
-inline int
+static inline int
 new_shadowsocks(ssocks_module_t module, jconf_t *conf) {
     return new_shadowsocks_(module, conf, NULL, NULL);
 }
 
-inline
-ssocks_addr_t *
+static inline ssocks_addr_t *
 new_ssocks_addr()
 {
     ssocks_addr_t *destaddr
@@ -119,8 +121,8 @@ new_ssocks_addr()
     return destaddr;
 }
 
-inline
-void free_ssocks_addr(ssocks_addr_t *destaddr)
+static inline void
+free_ssocks_addr(ssocks_addr_t *destaddr)
 {
     if (destaddr->dname != NULL) {
         ss_free(destaddr->dname);

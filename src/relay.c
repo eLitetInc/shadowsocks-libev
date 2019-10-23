@@ -52,14 +52,16 @@
 #include "common.h"
 #include "relay.h"
 
-int
-    acl = false,
+int acl = false,
     verbose    = false,
     ipv6first  = false,
     remote_dns = false, // resolve hostname remotely
     fast_open  = false,
     no_delay   = false,
     reuse_conn = false;
+
+struct ev_loop *loop;
+
 
 int
 create_and_bind(struct sockaddr_storage *storage,

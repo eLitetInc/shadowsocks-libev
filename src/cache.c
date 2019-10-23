@@ -89,15 +89,13 @@ cache_create(struct cache **dst, const size_t capacity,
 int
 cache_delete(struct cache *cache, int keep_data)
 {
-    struct cache_entry *entry;
-
-    if (!cache) {
+    if (!cache)
         return EINVAL;
-    }
 
     if (keep_data) {
         HASH_CLEAR(hh, cache->entries);
     } else {
+        struct cache_entry *entry;
         cache_foreach(cache, entry) {
             HASH_DEL(cache->entries, entry);
             cache_free(cache, entry);
@@ -121,9 +119,8 @@ cache_delete(struct cache *cache, int keep_data)
 int
 cache_clear(struct cache *cache, ev_tstamp age)
 {
-    if (!cache) {
+    if (!cache)
         return EINVAL;
-    }
 
     ev_tstamp now = ev_time();
     struct cache_entry *entry;
@@ -221,12 +218,11 @@ cache_remove_r(struct cache *cache,
 int
 cache_lookup(struct cache *cache, void *key, size_t key_len, void *value)
 {
-    struct cache_entry *tmp = NULL;
-
     if (!cache || !key || !value) {
         return EINVAL;
     }
 
+    struct cache_entry *tmp = NULL;
     HASH_FIND(hh, cache->entries, key, key_len, tmp);
     if (tmp) {
         HASH_DELETE(hh, cache->entries, tmp);
@@ -242,20 +238,17 @@ cache_lookup(struct cache *cache, void *key, size_t key_len, void *value)
 int
 cache_key_exist(struct cache *cache, void *key, size_t key_len)
 {
-    struct cache_entry *tmp = NULL;
-
     if (!cache || !key) {
         return 0;
     }
 
+    struct cache_entry *tmp = NULL;
     HASH_FIND(hh, cache->entries, key, key_len, tmp);
     if (tmp) {
         HASH_DELETE(hh, cache->entries, tmp);
         tmp->ts = ev_time();
         HASH_ADD_KEYPTR(hh, cache->entries, tmp->key, key_len, tmp);
         return 1;
-    } else {
-        return 0;
     }
 
     return 0;
@@ -278,14 +271,12 @@ cache_key_exist(struct cache *cache, void *key, size_t key_len)
  *  @return EINVAL if cache is NULL, ENOMEM if malloc fails, 0 otherwise
  */
 int
-cache_insert(struct cache *cache, void *key, size_t key_len, void *value)
+cache_insert_r(struct cache *cache, void *key, size_t key_len,
+               void *value, bool replace)
 {
-    struct cache_entry *entry     = NULL;
+    if (!cache) return EINVAL;
 
-    if (!cache) {
-        return EINVAL;
-    }
-
+    struct cache_entry *entry = NULL;
     if ((entry = malloc(sizeof(*entry))) == NULL) {
         return ENOMEM;
     }
@@ -295,7 +286,14 @@ cache_insert(struct cache *cache, void *key, size_t key_len, void *value)
 
     entry->ts = ev_time();
     entry->value = value;
-    HASH_ADD_KEYPTR(hh, cache->entries, entry->key, key_len, entry);
+
+    if (replace) {
+        struct cache_entry *replaced = NULL;
+        HASH_REPLACE(hh, cache->entries, key, key_len, entry, replaced);
+        if (replaced && cache_free(cache, replaced)) return -1;
+    } else {
+        HASH_ADD_KEYPTR(hh, cache->entries, entry->key, key_len, entry);
+    }
 
     if (cache->max_entries > 0 &&
         HASH_COUNT(cache->entries) >= cache->max_entries)
@@ -312,8 +310,7 @@ cache_insert(struct cache *cache, void *key, size_t key_len, void *value)
 void *
 cache_popfront(struct cache *cache, bool keyval)
 {
-    if (cache == NULL)
-        return NULL;
+    if (!cache) return NULL;
 
     struct cache_entry *element = cache->entries;
     if (element != NULL) {

@@ -66,6 +66,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
 
     if (r == 0) {
         // connection closed
+        LOGE("stage %d", server->stage);
         close_and_free_remote(EV_A_ remote);
         close_and_free_server(EV_A_ server);
         return;
@@ -104,12 +105,13 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             server->remote = remote;
 
             // TODO fixme
+            // TODO fix the enc !!!!!!!!
             LOGE("len %d idx %d", (int)server->buf->len, (int)server->buf->idx);
             LOGE("atyp %d id %d", (uint8_t)server->buf->data[0], (uint8_t)server->buf->data[1]);
 
             if (reuse_conn &&
                 cache_insert(remote->servers, &server->fd,
-                             sizeof(server->fd), server))
+                             sizeof(uint8_t), server))
             {
                 LOGE("failed to register remote session");
                 close_and_free_server(EV_A_ server);
@@ -137,15 +139,16 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             return;
         }
 
+        // TODO fixme
         if (reuse_conn && !server->abuf) {
             buffer_t *abuf = server->abuf
                            = new_buffer(sizeof(ssocks_mux_t));
             ssocks_mux_t *mux = (ssocks_mux_t *)abuf->data;
             mux->atyp = SSOCKS_ATYP_MUX;
             mux->id   = server->fd;
-            abuf->len = sizeof(ssocks_mux_t);
+            abuf->len = sizeof(*mux);
 
-            err = crypto->encrypt(abuf, remote->e_ctx, sizeof(ssocks_mux_t));
+            //err = crypto->encrypt(abuf, remote->e_ctx, sizeof(*mux));
 
             if (err) {
                 LOGE("invalid password or cipher");
@@ -156,7 +159,8 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
         }
     }
 
-    if (!remote->send_ctx->connected) {
+    if (!remote->send_ctx->connected
+        || server->stage != STAGE_STREAM) {
         ev_io_stop(EV_A_ & server_recv_ctx->io);
         if (reuse_conn)
             uniqset_add(remote->send_ctx->servers, server);
@@ -165,7 +169,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
         return;
     }
 
-    if (reuse_conn && server->stage == STAGE_STREAM)
+    if (reuse_conn)
         bprepend(server->buf, server->abuf, SOCKET_BUF_SIZE);
 
     int s = send(remote->fd, server->buf->data, server->buf->len, 0);
@@ -188,8 +192,10 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
         server->buf->len -= s;
         server->buf->idx += s;
         ev_io_stop(EV_A_ & server_recv_ctx->io);
-        if (reuse_conn)
+        if (reuse_conn) {
+            bprepend(server->buf, server->abuf, SOCKET_BUF_SIZE);
             uniqset_add(remote->send_ctx->servers, server);
+        }
         ev_io_start(EV_A_ & remote->send_ctx->io);
     } else {
         server->buf->len = 0;
@@ -206,6 +212,7 @@ server_send_cb(EV_P_ ev_io *w, int revents)
 
     if (remote->buf->len == 0) {
         // close and free
+        LOGE("server_send_cb stage %d", server->stage);
         close_and_free_remote(EV_A_ remote);
         close_and_free_server(EV_A_ server);
     } else {
@@ -243,6 +250,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
 
     if (r == 0) {
         // connection closed
+        LOGE("remote_recv_cb stage %d", server->stage);
         close_and_free_remote(EV_A_ remote);
         close_and_free_server(EV_A_ server);
         return;
@@ -332,12 +340,12 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
 
     struct cache_entry *lserver = NULL;
     if (reuse_conn) {
-        lserver = cache_head(remote_send_ctx->servers);
-        if (!lserver) {
+        if (!(lserver =
+                cache_head(remote_send_ctx->servers))) {
             ev_io_stop(EV_A_ & remote_send_ctx->io);
             return;
         }
-        server = *(server_t **)lserver->key;
+        server = *(server_t **)uniqset_element(lserver);
     }
 
     if (!remote_send_ctx->connected) {
@@ -363,14 +371,12 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
 
     if (server->buf->len == 0) {
         // close and free
+        LOGE("remote_send");
         close_and_free_remote(EV_A_ remote);
         close_and_free_server(EV_A_ server);
     } else {
         // has data to send
         ssize_t s = sendto_remote(remote, server->buf);
-
-            LOGE("sent len %d idx %d", (int)server->buf->len, (int)server->buf->idx);
-
 
         if (s == -1) {
             if (errno != EAGAIN && errno != EWOULDBLOCK) {
@@ -391,11 +397,12 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
             server->buf->len = 0;
             server->buf->idx = 0;
             if (reuse_conn) {
-                if (cache_remove_r(remote_send_ctx->servers, lserver)) 
+                if (cache_remove_r(remote_send_ctx->servers, lserver))
                 {
                     LOGE("failed to remove session");
                     close_and_free_remote(EV_A_ remote);
-                    close_and_free_server(EV_A_ server);                    
+                    close_and_free_server(EV_A_ server);
+                    return;
                 }
             } else
                 ev_io_stop(EV_A_ & remote_send_ctx->io);

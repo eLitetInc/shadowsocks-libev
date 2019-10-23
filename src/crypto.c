@@ -147,8 +147,6 @@ entropy_check(void)
 crypto_t *
 crypto_init(const char *password, const char *key, const char *method)
 {
-    int i, m = -1;
-
     entropy_check();
     // Initialize sodium for random generator
     if (sodium_init() == -1) {
@@ -163,14 +161,9 @@ crypto_init(const char *password, const char *key, const char *method)
 #endif
 
     if (method != NULL) {
-        for (i = 0; i < STREAM_CIPHER_NUM; i++)
-            if (strcmp(method, supported_stream_ciphers[i]) == 0) {
-                m = i;
-                break;
-            }
-        if (m != -1) {
-            cipher_t *cipher = stream_init(password, key, method);
-            return cipher ? ss_new(crypto_t, {
+        cipher_t *cipher = stream_init(password, key, method);
+        if (cipher) {
+            return ss_new(crypto_t, {
                 .cipher      = cipher,
                 .encrypt_all = &stream_encrypt_all,
                 .decrypt_all = &stream_decrypt_all,
@@ -178,17 +171,11 @@ crypto_init(const char *password, const char *key, const char *method)
                 .decrypt     = &stream_decrypt,
                 .ctx_init    = &stream_ctx_init,
                 .ctx_release = &stream_ctx_release,
-            }) : NULL;
+            });
         }
 
-        for (i = 0; i < AEAD_CIPHER_NUM; i++)
-            if (strcmp(method, supported_aead_ciphers[i]) == 0) {
-                m = i;
-                break;
-            }
-        if (m != -1) {
-            cipher_t *cipher = aead_init(password, key, method);
-            return cipher ? ss_new(crypto_t, {
+        if ((cipher = aead_init(password, key, method))) {
+            return ss_new(crypto_t, {
                 .cipher      = cipher,
                 .encrypt_all = &aead_encrypt_all,
                 .decrypt_all = &aead_decrypt_all,
@@ -196,7 +183,7 @@ crypto_init(const char *password, const char *key, const char *method)
                 .decrypt     = &aead_decrypt,
                 .ctx_init    = &aead_ctx_init,
                 .ctx_release = &aead_ctx_release,
-            }) : NULL;
+            });
         }
     }
 

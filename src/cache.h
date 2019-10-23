@@ -39,19 +39,19 @@
 
 typedef void (*cache_free_cb)(void *, void *);
 /* A cache entry */
-struct cache_entry {
+typedef struct cache_entry {
     void *key;         /**< Key         */
     void *value;       /**< Payload     */
     ev_tstamp ts;      /**< Timestamp   */
     UT_hash_handle hh; /**< Hash Handle */
-};
+} cache_entry;
 
 /* A cache object */
-struct cache {
+typedef struct cache {
     size_t max_entries;              /**< Maximum number of entries      */
     struct cache_entry *entries;     /**< Head pointer                   */
     cache_free_cb free_cb;           /**< Function to free cache entries */
-};
+} cache_t;
 
 /* A list entry */
 #define list_element(T) T *prev, *next
@@ -62,7 +62,7 @@ int cache_delete(struct cache *, int);
 int cache_clear(struct cache *, ev_tstamp);
 int cache_free(struct cache *, struct cache_entry *);
 int cache_lookup(struct cache *, void *, size_t, void *);
-int cache_insert(struct cache *, void *, size_t, void *);
+int cache_insert_r(struct cache *, void *, size_t, void *, bool);
 int cache_remove(struct cache *, void *, size_t);
 int cache_remove_r(struct cache *, struct cache_entry *);
 int cache_key_exist(struct cache *, void *, size_t);
@@ -72,11 +72,16 @@ void *cache_popfront(struct cache *, bool);
 #define cache_foreach(cache, element)    \
     struct cache_entry *tmp;           \
     HASH_ITER(hh, (cache)->entries, (element), (tmp))
+#define cache_insert(cache, key, key_len, value)    \
+    cache_insert_r(cache, key, key_len, value, false)
+#define cache_replace(cache, key, key_len, value)   \
+    cache_insert_r(cache, key, key_len, value, true)
 
 #define stack_push  STACK_PUSH
 #define stack_pop   STACK_POP
 #define stack_empty STACK_EMPTY
 
+#define uniqset_element(entry) (entry)->key
 #define uniqset_add(cache, element) \
     cache_insert(cache, &element, sizeof(element), NULL)
 #define uniqset_remove(cache, element) \
