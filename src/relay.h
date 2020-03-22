@@ -129,6 +129,7 @@ typedef struct remote_ctx {
 #ifdef MODULE_LOCAL
     ev_timer watcher;
     struct cache *servers; // server queue
+    int dlen;
 #endif
     int connected;
     struct remote *remote;

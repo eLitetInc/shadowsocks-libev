@@ -103,6 +103,7 @@ new_remote(server_t *server) {
     remote->server = server;
 #ifdef MODULE_LOCAL
     remote->addr = NULL;
+    remote->recv_ctx->dlen = SOCKET_BUF_SIZE;
 #endif
 
     return remote;
@@ -135,7 +136,7 @@ new_server(int fd, listen_ctx_t *listener) {
     crypto->ctx_init(crypto->cipher, server->d_ctx, 0);
 
     if (reuse_conn) {
-        server->remotes = new_cache(-1, remote_free_cb);
+        server->remotes = new_cache(-1, NULL/*remote_free_cb*/);
         server->send_ctx->remotes = new_cache(-1, NULL);
     }
 

@@ -73,6 +73,28 @@ brealloc(buffer_t *ptr, size_t len, size_t capacity)
     return real_capacity;
 }
 
+/*
+void
+breset(buffer_t *ptr)
+{
+    if (ptr == NULL)
+        return;
+    ptr->data -= ptr->idx;
+    ptr->idx = 0;
+    ptr->len = 0;
+}
+
+void
+bshift(buffer_t *ptr, size_t len)
+{
+    if (ptr == NULL)
+        return;
+    ptr->idx += len;
+    ptr->data += len;
+    ptr->len -= len;
+}
+*/
+
 void
 bfree(buffer_t *ptr)
 {

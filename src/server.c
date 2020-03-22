@@ -99,13 +99,14 @@ resolv_cb(struct sockaddr *addr, void *data)
             // listen to remote connected event
             if (server->stage == STAGE_MULTIPLEX &&
                 cache_replace(server->remotes,
-                    &remote->cid, sizeof(remote->cid), remote)
-            ) {
+                    &remote->cid, sizeof(remote->cid), remote))
+            {
                 LOGE("invalid session");
                 close_and_free_remote(EV_A_ remote);
                 close_and_free_server(EV_A_ server);
                 return;
             }
+
             ev_io_start(EV_A_ & remote->send_ctx->io);
         }
     }
@@ -168,8 +169,8 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
 
     // handshake and transmit data
     switch (server->stage) {
-        case STAGE_MULTIPLEX:
-        case STAGE_INIT: {
+        case STAGE_INIT:
+        case STAGE_MULTIPLEX: {
             ssocks_addr_t destaddr = {};
             int offset = parse_ssocks_header(buf, &destaddr, 0);
 
@@ -182,14 +183,12 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             }
 
             if (destaddr.id) {
-                if (reuse_conn) {
-                    if (server->stage != STAGE_MULTIPLEX)
-                        server->stage = STAGE_MULTIPLEX;
-                } else {
+                if (!reuse_conn) {
                     LOGE("connection multiplexing not enabled");
                     close_and_free_server(EV_A_ server);
                     return;
                 }
+                server->stage = STAGE_MULTIPLEX;
             }
 
             buf->len -= offset;
@@ -242,12 +241,17 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
 
                 resolv_cb((struct sockaddr *)destaddr.addr, remote);
             } else {
+                LOGE("mux %d", destaddr.id);
                 if (server->stage == STAGE_MULTIPLEX && destaddr.id) {
+                    LOGE("mux im not in yet");
                     if (cache_lookup(server->remotes,
-                            &destaddr.id, sizeof(destaddr.id), &remote)) {
+                            &destaddr.id, sizeof(destaddr.id), &remote))
+                    {
+                        LOGE("invalid session id");
                         close_and_free_server(EV_A_ server);
                         return;
                     }
+                    LOGE("mux im in");
                     goto TAG_STAGE_STREAM;
                 }
             }
@@ -256,7 +260,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
         TAG_STAGE_STREAM: {
             ev_timer_again(EV_A_ & server->recv_ctx->watcher);
 
-            int s = send(remote->fd, buf->data, buf->len, 0);
+            int s = send(remote->fd, buf->data + buf->idx, buf->len, 0);
             if (s == -1) {
                 if (errno == EAGAIN || errno == EWOULDBLOCK) {
                     // no data, wait for send
@@ -275,6 +279,10 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                 if (server->stage != STAGE_MULTIPLEX)
                     ev_io_stop(EV_A_ & server_recv_ctx->io);
                 ev_io_start(EV_A_ & remote->send_ctx->io);
+            } else {
+                buf->len = 0;
+                buf->idx = 0;
+                ev_io_start(EV_A_ & remote->recv_ctx->io);
             }
         } return;
     }
@@ -292,7 +300,8 @@ server_send_cb(EV_P_ ev_io *w, int revents)
     struct cache_entry *lremote = NULL;
     if (server->stage == STAGE_MULTIPLEX) {
         if (!(lremote =
-                cache_head(server_send_ctx->remotes))) {
+                cache_head(server_send_ctx->remotes)))
+        {
             ev_io_stop(EV_A_ & server_send_ctx->io);
             return;
         }
@@ -376,22 +385,9 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
 
     if (server->stage == STAGE_MULTIPLEX) {
         if (remote->cid && !remote->abuf) {
-            buffer_t *abuf = remote->abuf
-                           = new_buffer(sizeof(uint8_t));
-
-            abuf->data[abuf->len++] =
-            remote->buf->data[remote->buf->len++] = remote->cid;
-
-            // TODO fixme
-            int err = crypto->encrypt(abuf, server->e_ctx, abuf->capacity);
-
-            if (err) {
-                LOGE("invalid password or cipher");
-                close_and_free_remote(EV_A_ remote);
-                close_and_free_server(EV_A_ server);
-                return;
-            }
+            remote->abuf = new_buffer(sizeof(uint8_t) + sizeof(uint16_t));
         }
+        remote->buf->len += remote->abuf->len = remote->abuf->capacity;
     }
 
     ssize_t r = recv(remote->fd, remote->buf->data + remote->buf->len,
@@ -421,6 +417,29 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
     rx += r;
 
     remote->buf->len += r;
+
+    if (server->stage == STAGE_MULTIPLEX) {
+        // TODO buf len sizeof
+        buffer_t *abuf = remote->abuf;
+        *(uint16_t *)abuf->data = remote->buf->len - sizeof(uint8_t) - sizeof(uint16_t);
+        memcpy(abuf->data + sizeof(uint16_t), &remote->cid, sizeof(uint8_t));
+        memcpy(remote->buf->data, abuf->data, abuf->len);
+
+        LOGE("remote->dlen=%d", *(uint16_t *)abuf->data);
+        //printf("abuf -> whoa append %.*s", (int)remote->abuf->len, remote->abuf->data);
+        //printf("whoa append %.*s", (int)remote->buf->len, remote->buf->data);
+
+        // TODO fixme
+        int err = crypto->encrypt(abuf, server->e_ctx, abuf->capacity);
+
+        if (err) {
+            LOGE("invalid password or cipher");
+            close_and_free_remote(EV_A_ remote);
+            close_and_free_server(EV_A_ server);
+            return;
+        }
+    }
+
     int err = crypto->encrypt(remote->buf, server->e_ctx, SOCKET_BUF_SIZE);
 
     if (err) {
@@ -457,6 +476,10 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
         if (server->stage == STAGE_MULTIPLEX)
             uniqset_add(server->send_ctx->remotes, remote);
         ev_io_start(EV_A_ & server->send_ctx->io);
+    } else {
+        remote->buf->len = 0;
+        remote->buf->idx = 0;
+        //ev_io_stop(EV_A_ & remote_recv_ctx->io);
     }
 
     // Disable TCP_NODELAY after the first response are sent

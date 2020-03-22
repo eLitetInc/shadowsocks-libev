@@ -85,7 +85,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
 
     server->buf->len += r;
 
-    if (!remote) {
+    if (remote == NULL) {
         ssocks_addr_t destaddr = {
             .addr = &(struct sockaddr_storage){}
         };
@@ -159,8 +159,9 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
         }
     }
 
-    if (!remote->send_ctx->connected
-        || server->stage != STAGE_STREAM) {
+    if (!remote->send_ctx->connected ||
+        server->stage != STAGE_STREAM)
+    {
         ev_io_stop(EV_A_ & server_recv_ctx->io);
         if (reuse_conn)
             uniqset_add(remote->send_ctx->servers, server);
@@ -244,13 +245,14 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
 {
     remote_ctx_t *remote_recv_ctx = (remote_ctx_t *)w;
     remote_t *remote              = remote_recv_ctx->remote;
-    server_t *server              = reuse_conn ? NULL : remote->server;
+    server_t *server              = remote->server;
 
-    ssize_t r = recv(remote->fd, remote->buf->data, SOCKET_BUF_SIZE, 0);
+    ssize_t r = recv(remote->fd, remote->buf->data + remote->buf->idx + remote->buf->len,
+                     remote_recv_ctx->dlen - remote->buf->len, 0);
 
     if (r == 0) {
         // connection closed
-        LOGE("remote_recv_cb stage %d", server->stage);
+        //LOGE("remote_recv_cb stage %d", server->stage);
         close_and_free_remote(EV_A_ remote);
         close_and_free_server(EV_A_ server);
         return;
@@ -268,7 +270,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
         }
     }
 
-    remote->buf->len = r;
+    remote->buf->len += r;
 
     if (remote->crypto) {
         crypto_t *crypto = remote->crypto;
@@ -283,15 +285,36 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
         }
     }
 
+    // TODO init recvd more than remote_recv_ctx->dlen? SOCKET_BUF_SIZE init val?
+    // TODO recv header first
+    // TODO seperate code base
+    // TODO buffer_t memmove
+    size_t rlen = 0;
     if (reuse_conn) {
-        if (cache_lookup(remote->servers,
-            &remote->buf->data[remote->buf->idx++],
-            sizeof(uint8_t), &server) != 0)
-        {
-            LOGE("invalid session id");
-            return;
+        // TODO pkt size && id
+        if (remote_recv_ctx->dlen == SOCKET_BUF_SIZE) {
+            remote_recv_ctx->dlen = *(uint16_t *)remote->buf->data;
+            if (cache_lookup(remote->servers,
+                remote->buf->data + sizeof(uint16_t),
+                sizeof(uint8_t), &server) != 0)
+            {
+                LOGE("invalid session id");
+                return;
+            }
+            LOGE("server->fd=%d", server->fd);
+            remote->server = server;
+            remote->buf->len -= sizeof(uint16_t) + sizeof(uint8_t);
+            remote->buf->idx += sizeof(uint16_t) + sizeof(uint8_t);
         }
-        remote->buf->len--;
+
+        int remaining = remote->buf->len - remote_recv_ctx->dlen;
+        LOGE("remote->buf->len==%d remote_recv_ctx->dlen==%d remaining=%d", (int)remote->buf->len, (int)remote_recv_ctx->dlen, (int)remaining);
+        if (remaining >= 0) {
+            rlen = remaining;
+            remote_recv_ctx->dlen = SOCKET_BUF_SIZE;
+        } else {
+            return; // TODO optimize
+        }
     }
 
     int s = send(server->fd, remote->buf->data + remote->buf->idx, remote->buf->len, 0);
@@ -316,7 +339,8 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
             ev_io_stop(EV_A_ & remote_recv_ctx->io);
         ev_io_start(EV_A_ & server->send_ctx->io);
     } else {
-        remote->buf->len = 0;
+        LOGE("rlen=%d", (int)rlen);
+        remote->buf->len = rlen;
         remote->buf->idx = 0;
     }
 
@@ -340,8 +364,8 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
 
     struct cache_entry *lserver = NULL;
     if (reuse_conn) {
-        if (!(lserver =
-                cache_head(remote_send_ctx->servers))) {
+        if (!(lserver = cache_head(remote_send_ctx->servers)))
+        {
             ev_io_stop(EV_A_ & remote_send_ctx->io);
             return;
         }

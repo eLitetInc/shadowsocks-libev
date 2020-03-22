@@ -61,7 +61,8 @@ typedef struct ssocks_hdr {
 } PACKED ssocks_hdr_t;
 
 typedef struct ssocks_mux {
-    uint8_t atyp, id;
+    uint8_t atyp;
+    uint8_t id;
 } PACKED ssocks_mux_t;
 #define ssocks_mux_hdr(id) (ssocks_mux_t) { .atyp = SSOCKS_ATYP_MUX, .id = id }
 #define ssocks_readable(destaddr) \

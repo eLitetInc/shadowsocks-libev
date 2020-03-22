@@ -222,13 +222,11 @@ cache_lookup(struct cache *cache, void *key, size_t key_len, void *value)
         return EINVAL;
     }
 
-    struct cache_entry *tmp = NULL;
-    HASH_FIND(hh, cache->entries, key, key_len, tmp);
-    if (tmp) {
-        HASH_DELETE(hh, cache->entries, tmp);
-        tmp->ts = ev_time();
-        HASH_ADD_KEYPTR(hh, cache->entries, tmp->key, key_len, tmp);
-        *(void **)value = tmp->value;    // okay no memcpy here sweetie
+    struct cache_entry *entry = NULL;
+    HASH_FIND(hh, cache->entries, key, key_len, entry);
+    if (entry) {
+        entry->ts = ev_time();
+        *(void **)value = entry->value;    // okay no memcpy here sweetie
         return 0;
     }
 
@@ -281,15 +279,13 @@ cache_insert_r(struct cache *cache, void *key, size_t key_len,
         return ENOMEM;
     }
 
-    entry->key = ss_malloc(key_len);
-    memcpy(entry->key, key, key_len);
-
+    entry->key = memdup(key, key_len);
     entry->ts = ev_time();
     entry->value = value;
 
     if (replace) {
-        struct cache_entry *replaced = NULL;
-        HASH_REPLACE(hh, cache->entries, key, key_len, entry, replaced);
+        struct cache_entry *replaced;
+        HASH_REPLACE_KEYPTR(hh, cache->entries, entry->key, key_len, entry, replaced);
         if (replaced && cache_free(cache, replaced)) return -1;
     } else {
         HASH_ADD_KEYPTR(hh, cache->entries, entry->key, key_len, entry);
@@ -300,7 +296,7 @@ cache_insert_r(struct cache *cache, void *key, size_t key_len,
     {
         cache_foreach(cache, entry) {
             HASH_DELETE(hh, cache->entries, entry);
-            return cache_free(cache, entry);
+            if (cache_free(cache, entry)) return -1;
         }
     }
 

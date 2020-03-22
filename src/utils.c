@@ -509,25 +509,22 @@ size_t
 readoff_from(char **content, const char *file)
 {
     FILE *f = strcmp(file, "-") == 0 ? stdin : fopen(file, "r");
-    if (f == NULL)
-    {
+    if (f == NULL) {
         FATAL("Invalid file path %s", file);
     }
 
-    size_t pos = 0;
-    char buf[1024] = { 0 };
-
+    size_t len, pos = 0;
+    char buf[BUFSIZ] = {};
     while (fgets(buf, sizeof(buf), f))
     {
-        size_t len = strlen(buf);
+        len = strlen(buf);
         *content = ss_realloc(*content, pos + len);
-        strncpy(*content + pos, buf, len);
+        memcpy(*content + pos, buf, len);
         pos += len;
     }
 
-    if (ferror(f))
-    {
-        FATAL("Failed to read the file.")
+    if (ferror(f)) {
+        FATAL("Failed to read the file.");
     }
 
     fclose(f);
